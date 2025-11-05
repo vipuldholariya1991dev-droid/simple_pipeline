@@ -1,160 +1,140 @@
 from typing import List, Dict
-import httpx
-from bs4 import BeautifulSoup
-from urllib.parse import quote_plus
-import re
+import asyncio
 from app.scraper.base import BaseScraper
 from app.config import settings
 
+# Import Exa API (required for PDF search)
+try:
+    from exa_py import Exa
+    EXA_AVAILABLE = True
+except ImportError:
+    EXA_AVAILABLE = False
+    print("⚠️  Exa API library not available. Please install: pip install exa-py")
+
 class PDFScraper(BaseScraper):
-    """Scraper for PDF files using DuckDuckGo Search"""
+    """Scraper for PDF files using Exa API"""
     
     def __init__(self):
         super().__init__()
-        print(f"✅ PDF Scraper initialized - using DuckDuckGo for PDF search")
+        if EXA_AVAILABLE and settings.EXA_API_KEY:
+            print(f"✅ PDF Scraper initialized - using Exa API")
+        elif not EXA_AVAILABLE:
+            print(f"⚠️  PDF Scraper: Exa API library not installed. Please install: pip install exa-py")
+        elif not settings.EXA_API_KEY:
+            print(f"⚠️  PDF Scraper: Exa API key not configured. Set EXA_API_KEY environment variable.")
     
     async def search(self, keyword: str, max_results: int = None) -> List[Dict]:
-        """Search for PDF files using DuckDuckGo Search"""
+        """Search for PDF files using Exa API"""
         if max_results is None:
             max_results = settings.MAX_RESULTS_PER_KEYWORD
         
         print(f"  🔍 PDF Scraper: Searching for '{keyword}' (max_results={max_results})", flush=True)
-        print(f"  🔄 Using DuckDuckGo for PDF search", flush=True)
-        result = await self._search_with_duckduckgo(keyword, max_results)
-        print(f"  📊 DuckDuckGo returned {len(result)} PDFs", flush=True)
-        return result
+        
+        if not EXA_AVAILABLE:
+            print(f"  ❌ Exa API library not available. Please install: pip install exa-py", flush=True)
+            return []
+        
+        if not settings.EXA_API_KEY:
+            print(f"  ❌ Exa API key not configured. Set EXA_API_KEY environment variable.", flush=True)
+            return []
+        
+        # Use Exa API for PDF search
+        print(f"  🔄 Using Exa API for PDF search...", flush=True)
+        items = await self._search_with_exa(keyword, max_results)
+        
+        print(f"  ✅ PDF Scraper: Found {len(items)} PDFs for '{keyword}'", flush=True)
+        return items[:max_results]
     
-    async def _search_with_duckduckgo(self, keyword: str, max_results: int) -> List[Dict]:
-        """Search PDFs using DuckDuckGo Search"""
+    async def _search_with_exa(self, keyword: str, max_results: int) -> List[Dict]:
+        """Search PDFs using Exa API (high quality semantic search for PDFs)"""
         items = []
-        urls = set()
+        
+        if not EXA_AVAILABLE or not settings.EXA_API_KEY:
+            if not EXA_AVAILABLE:
+                print(f"    ⚠️  Exa API library not installed", flush=True)
+            elif not settings.EXA_API_KEY:
+                print(f"    ⚠️  Exa API key not configured (set EXA_API_KEY environment variable)", flush=True)
+            return items
         
         try:
-            print(f"    🔄 DuckDuckGo: Starting PDF search for '{keyword}'", flush=True)
-            # Try multiple query variations
+            print(f"    🔄 Using Exa API for '{keyword}'", flush=True)
+            
+            # Run Exa search in executor since it's synchronous
+            loop = asyncio.get_event_loop()
+            
+            # Create Exa client
+            exa = Exa(api_key=settings.EXA_API_KEY)
+            
+            # Try multiple query variations for better results
             queries = [
                 f'{keyword} filetype:pdf',
                 f'{keyword} PDF',
                 f'{keyword} PDF document',
             ]
             
-            # Create a custom client with better headers
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-            
-            # Try multiple query variations
-            for query_idx, search_query_text in enumerate(queries, 1):
+            urls = set()
+            for query_idx, search_query in enumerate(queries, 1):
                 if len(urls) >= max_results:
                     break
-                    
-                search_query = quote_plus(search_query_text)
-                search_url = f"https://html.duckduckgo.com/html/?q={search_query}"
-                print(f"    📝 DuckDuckGo: Query {query_idx}/{len(queries)} - '{search_query_text}'", flush=True)
-            
+                
+                print(f"    📝 Exa Query {query_idx}/{len(queries)}: '{search_query}'", flush=True)
+                
                 try:
-                    async with httpx.AsyncClient(headers=headers, timeout=30, follow_redirects=True) as client:
-                        response = await client.get(search_url)
-                        if response.status_code == 200:
-                            soup = BeautifulSoup(response.text, 'html.parser')
+                    # Run Exa search in executor
+                    def run_exa_search(query, max_res):
+                        # Search for PDFs using Exa API
+                        # Note: Exa will search semantically - we filter results to PDFs only
+                        results = exa.search(
+                            query=query,
+                            num_results=max_res * 3,  # Get more results to filter for PDFs
+                        )
+                        return results.results if results.results else []
+                    
+                    results = await loop.run_in_executor(
+                        None,
+                        run_exa_search,
+                        search_query,
+                        max_results
+                    )
+                    
+                    found_count = 0
+                    for result in results:
+                        if len(urls) >= max_results:
+                            break
                         
-                            # Method 1: DuckDuckGo result links are in <a class="result__a"> tags
-                            found_in_links = 0
-                            for link in soup.find_all('a', class_='result__a', href=True):
-                                href = link.get('href', '')
-                                if href:
-                                    # DuckDuckGo uses redirect URLs, extract actual URL
-                                    if 'uddg=' in href:
-                                        import urllib.parse
-                                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
-                                        if 'uddg' in parsed:
-                                            href = urllib.parse.unquote(parsed['uddg'][0])
-                                    
-                                    # Only accept direct PDF URLs that end with .pdf
-                                    if href.endswith('.pdf') and href not in urls:
-                                        if href.startswith('http'):
-                                            urls.add(href)
-                                            found_in_links += 1
-                                            print(f"      ✅ Found PDF {found_in_links}: {href[:80]}", flush=True)
-                                            if len(urls) >= max_results:
-                                                break
-                            
-                            # Method 2: Check for any PDF links in the page
-                            found_in_all_links = 0
-                            for link in soup.find_all('a', href=True):
-                                if len(urls) >= max_results:
-                                    break
-                                href = link.get('href', '')
-                                if href:
-                                    # Only accept direct PDF URLs that end with .pdf
-                                    if href.endswith('.pdf'):
-                                        # Clean up the URL
-                                        if href.startswith('/'):
-                                            continue  # Skip relative URLs
-                                        if href.startswith('http') and href not in urls:
-                                            urls.add(href)
-                                            found_in_all_links += 1
-                                            print(f"      ✅ Found PDF (all links) {found_in_all_links}: {href[:80]}", flush=True)
-                                            if len(urls) >= max_results:
-                                                break
-                            
-                            # Method 3: Extract from page text using regex
-                            found_in_text = 0
-                            page_text = response.text
-                            # Only extract URLs that end with .pdf (direct PDF links)
-                            pdf_urls = re.findall(r'https?://[^\s<>"\'\)]+\.pdf(?:\?|$|"|\'|\)|,|;|\.|!|\s)', page_text)
-                            for pdf_url in pdf_urls:
-                                if len(urls) >= max_results:
-                                    break
-                                # Clean trailing punctuation and ensure it ends with .pdf
-                                pdf_url = pdf_url.rstrip('.,;!?"\')\s')
-                                # Only accept if it ends with .pdf (not .pdf? or .pdf#)
-                                if pdf_url.endswith('.pdf') and pdf_url not in urls:
-                                    if pdf_url.startswith('http'):
-                                        urls.add(pdf_url)
-                                        found_in_text += 1
-                                        print(f"      ✅ Found PDF (text) {found_in_text}: {pdf_url[:80]}", flush=True)
-                                        if len(urls) >= max_results:
-                                            break
-                            
-                            print(f"    📊 DuckDuckGo: Found {len(urls)} PDF URLs from this query", flush=True)
-                        else:
-                            print(f"    ⚠️  DuckDuckGo: HTTP {response.status_code} for query {query_idx}", flush=True)
-                            
+                        url = result.url if hasattr(result, 'url') else str(result)
+                        if not url:
+                            continue
+                        
+                        # Ensure it's a PDF URL
+                        clean_url = url.split('?')[0].split('#')[0]
+                        if clean_url.lower().endswith('.pdf') and clean_url.startswith('http'):
+                            if clean_url not in urls:
+                                urls.add(clean_url)
+                                found_count += 1
+                                title = result.title if hasattr(result, 'title') else result.text[:100] if hasattr(result, 'text') else clean_url.split('/')[-1]
+                                items.append({
+                                    "url": clean_url,
+                                    "title": title[:200] if title else keyword,
+                                    "description": result.text[:500] if hasattr(result, 'text') else f"PDF document for: {keyword}",
+                                })
+                                print(f"      ✅ Found PDF {found_count}: {clean_url[:80]}", flush=True)
+                    
+                    if found_count > 0:
+                        print(f"    📊 Found {found_count} PDFs from Exa query", flush=True)
+                    
+                    # Small delay between queries
+                    if query_idx < len(queries):
+                        await asyncio.sleep(1)
+                        
                 except Exception as e:
-                    print(f"    ⚠️  Error fetching DuckDuckGo results for query {query_idx}: {e}", flush=True)
-                    continue  # Try next query
+                    print(f"    ⚠️  Error with Exa query {query_idx}: {e}", flush=True)
+                    continue
             
-            # Process collected URLs - filter to only direct PDF URLs
-            print(f"    📊 DuckDuckGo: Total unique PDF URLs found: {len(urls)}", flush=True)
-            filtered_urls = []
-            for url in list(urls)[:max_results]:
-                # Only accept URLs that end with .pdf (direct PDF links)
-                if url and url.endswith('.pdf') and (url.startswith('http://') or url.startswith('https://')):
-                    # Remove query parameters but keep .pdf extension
-                    clean_url = url.split('?')[0].split('#')[0]
-                    if clean_url.endswith('.pdf') and clean_url not in filtered_urls:
-                        filtered_urls.append(clean_url)
-                        filename = clean_url.split('/')[-1]
-                        items.append({
-                            "url": clean_url,
-                            "title": filename or keyword,
-                            "description": f"PDF document for: {keyword}",
-                        })
+            print(f"    📊 Exa API: Total PDF URLs found: {len(items)}", flush=True)
             
-            print(f"    📊 DuckDuckGo: Filtered to {len(items)} direct PDF URLs (removed non-PDF links)", flush=True)
-            
-            print(f"    📊 DuckDuckGo found {len(items)} PDFs for '{keyword}'", flush=True)
-            if len(items) == 0:
-                print(f"    ⚠️  No PDFs found via DuckDuckGo for '{keyword}'", flush=True)
-        
         except Exception as e:
-            print(f"    ❌ Error scraping PDFs with DuckDuckGo for '{keyword}': {e}", flush=True)
+            print(f"    ❌ Error using Exa API: {e}", flush=True)
             import traceback
             traceback.print_exc()
         
@@ -170,48 +150,3 @@ class PDFScraper(BaseScraper):
         
         # Only accept URLs that end with .pdf (direct PDF links)
         return clean_url.lower().endswith('.pdf')
-        
-        # Old code below - not executed
-        url_lower = url.lower()
-        # Exclude common non-PDF hosting sites
-        excluded_domains = [
-            'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com',
-            'imgur.com', 'flickr.com', 'pinterest.com', 'instagram.com',
-            'facebook.com', 'twitter.com', 'x.com', 'linkedin.com',
-            'reddit.com', 'tumblr.com', 'snapchat.com', 'tiktok.com',
-            'twitch.tv', 'soundcloud.com', 'spotify.com', 'apple.com/music',
-            'amazon.com', 'ebay.com', 'etsy.com', 'shopify.com',
-            'github.com', 'gitlab.com', 'bitbucket.org', 'stackoverflow.com',
-            'wikipedia.org', 'wikimedia.org', 'wikia.com', 'fandom.com',
-            'google.com', 'googleapis.com', 'gstatic.com', 'googletagmanager.com',
-            'doubleclick.net', 'googlesyndication.com', 'google-analytics.com',
-            'adobe.com', 'adobesc.com', 'adobelogin.com', 'adobedtm.com',
-            'microsoft.com', 'office.com', 'office365.com', 'live.com',
-            'cloudflare.com', 'cloudflareinsights.com', 'cfanalytics.com',
-            'amazonaws.com', 's3.amazonaws.com', 'cloudfront.net',
-            'akamai.com', 'akamaized.net', 'fastly.com', 'fastlylb.net',
-            'cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'unpkg.com',
-            'jquery.com', 'bootstrapcdn.com', 'fontawesome.com',
-            'gravatar.com', 'wp.com', 'wordpress.com', 'wordpress.org',
-            'tumblr.com', 'blogger.com', 'blogspot.com', 'medium.com',
-            'substack.com', 'ghost.org', 'typepad.com', 'livejournal.com',
-            'myspace.com', 'friendster.com', 'orkut.com', 'bebo.com',
-            'hi5.com', 'tagged.com', 'meetup.com', 'nextdoor.com',
-            'clubhouse.com', 'discord.com', 'telegram.org', 'whatsapp.com',
-            'signal.org', 'wechat.com', 'line.me', 'kakao.com',
-            'weibo.com', 'qq.com', 'baidu.com', 'sina.com.cn',
-            'naver.com', 'daum.net', 'yahoo.com', 'yahoo.co.jp',
-            'aol.com', 'msn.com', 'bing.com', 'duckduckgo.com',
-            'ask.com', 'yandex.com', 'ecosia.org', 'startpage.com',
-            'brave.com', 'opera.com', 'safari.com', 'firefox.com',
-            'chrome.com', 'edge.com', 'internetexplorer.com',
-            'netscape.com', 'mozilla.org', 'webkit.org', 'chromium.org',
-        ]
-        
-        # Check if URL contains excluded domain
-        for domain in excluded_domains:
-            if domain in url_lower:
-                return False
-        
-        # Check if URL ends with .pdf or contains .pdf
-        return url_lower.endswith('.pdf') or '.pdf' in url_lower or 'filetype:pdf' in url_lower

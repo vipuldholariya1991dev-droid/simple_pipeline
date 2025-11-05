@@ -92,14 +92,25 @@ async def background_scrape_task(
             current_image_count = current_progress.get("image_count", 0)
             current_youtube_count = current_progress.get("youtube_count", 0)
             
+            # Preserve resumable mode info if it exists
+            resumable_mode = current_progress.get("resumable_mode", False)
+            new_keywords_count = current_progress.get("new_keywords_count", 0)
+            skipped_keywords_count = current_progress.get("skipped_keywords_count", 0)
+            all_keywords_scraped = current_progress.get("all_keywords_scraped", False)
+            
             scraping_progress[task_id] = {
+                **current_progress,  # Preserve all existing fields
                 "keyword": keyword,
                 "total_keywords": total,
                 "current_keyword_index": idx + 1,
                 "pdf_count": current_pdf_count,
                 "image_count": current_image_count,
                 "youtube_count": current_youtube_count,
-                "status": "processing"
+                "status": "processing",
+                "resumable_mode": resumable_mode,
+                "new_keywords_count": new_keywords_count,
+                "skipped_keywords_count": skipped_keywords_count,
+                "all_keywords_scraped": all_keywords_scraped
             }
             
             # Get source file for this keyword
@@ -185,41 +196,67 @@ async def upload_csv(
     scrape_image_bool = scrape_image.lower() in ("true", "1", "yes", "on")
     scrape_youtube_bool = scrape_youtube.lower() in ("true", "1", "yes", "on")
     
-    # Cancel all old running tasks AND delete old items from database
-    print(f"\n⚠️  Cancelling all old tasks and clearing old items...", flush=True)
-    old_items_count = 0
+    # RESUMABLE MODE: Check which keywords have already been scraped
+    # A keyword is considered "already scraped" if it has ANY items in the database
+    # from the same source_file
+    already_scraped_keywords = set()
+    new_keywords = []
+    
+    for keyword in unique_keywords:
+        source_file = keyword_to_file.get(keyword, "unknown")
+        # Check if this keyword from this source_file has any items in database
+        existing_items = db.query(ScrapedItem).filter(
+            ScrapedItem.keyword == keyword,
+            ScrapedItem.source_file == source_file
+        ).first()
+        
+        if existing_items:
+            already_scraped_keywords.add(keyword)
+        else:
+            new_keywords.append(keyword)
+    
+    # Use resumable mode if there are any already-scraped keywords
+    # If all keywords are already scraped, still enable resumable mode but keywords_to_process will be empty
+    resumable_mode = len(already_scraped_keywords) > 0
+    keywords_to_process = new_keywords if resumable_mode else unique_keywords
+    
+    # If all keywords are already scraped, warn user
+    if resumable_mode and len(new_keywords) == 0:
+        print(f"\n⚠️  ALL KEYWORDS ALREADY SCRAPED", flush=True)
+        print(f"   ⏭️  All {len(already_scraped_keywords)} keywords from this CSV have already been scraped.", flush=True)
+        print(f"   💡 No new keywords to process. Task will complete immediately.", flush=True)
+    
+    if resumable_mode:
+        print(f"\n🔄 RESUMABLE MODE ACTIVATED", flush=True)
+        print(f"   ✅ {len(new_keywords)} new keywords will be scraped", flush=True)
+        print(f"   ⏭️  {len(already_scraped_keywords)} already-scraped keywords skipped: {sorted(already_scraped_keywords)}", flush=True)
+    
+    # Cancel all old running tasks (but keep old items in database)
+    # IMPORTANT: We keep ALL items from ALL scraping sessions in the database.
+    # The frontend filters by task_id to show only the current session.
+    # Duplicate detection checks against ALL items across ALL sessions.
+    print(f"\n⚠️  Cancelling all old running tasks (keeping all items in database)...", flush=True)
     for old_task_id in list(scraping_progress.keys()):
         if scraping_progress[old_task_id].get("status") == "processing":
             cancelled_tasks.add(old_task_id)
             scraping_progress[old_task_id]["status"] = "cancelled"
             print(f"   ✅ Cancelled old task: {old_task_id}", flush=True)
     
-    # Delete all old items from database (items without task_id or with old task_ids)
-    try:
-        # Count items to delete
-        old_items_count = db.query(ScrapedItem).count()
-        
-        if old_items_count > 0:
-            # Delete all items from database
-            db.query(ScrapedItem).delete()
-            db.commit()
-            print(f"   ✅ Deleted {old_items_count} old items from database", flush=True)
-        else:
-            print(f"   ✅ Database is already empty", flush=True)
-    except Exception as e:
-        db.rollback()
-        print(f"   ⚠️  Warning: Could not clear old items: {e}", flush=True)
+    # Keep all old items in database - don't delete them
+    # All scraping sessions will accumulate items in the database
+    total_items_count = db.query(ScrapedItem).count()
+    print(f"   ℹ️  Total items in database (kept from all sessions): {total_items_count}", flush=True)
     
     # Create task ID
     task_id = f"task_{datetime.now().timestamp()}"
     
-    # Store allowed keywords for validation
+    # Store allowed keywords for validation (use all keywords, not just new ones)
     allowed_keywords_set = set(unique_keywords)
     
     # Initialize progress
     scraping_progress[task_id] = {
         "keyword": "",
-        "total_keywords": len(unique_keywords),
+        "total_keywords": len(keywords_to_process),  # Only new keywords to process
         "current_keyword_index": 0,
         "pdf_count": 0,
         "image_count": 0,
@@ -227,24 +264,34 @@ async def upload_csv(
         "status": "processing",
         "files": file_names,  # Track which files were used
         "allowed_keywords": allowed_keywords_set,  # Store allowed keywords for validation
-        "keyword_to_file": keyword_to_file  # Map keyword to source file
+        "keyword_to_file": keyword_to_file,  # Map keyword to source file
+        "resumable_mode": resumable_mode,  # Track if resumable mode is active
+        "new_keywords_count": len(new_keywords),  # Number of new keywords to scrape
+        "skipped_keywords_count": len(already_scraped_keywords) if resumable_mode else 0,  # Number of skipped keywords
+        "all_keywords_scraped": resumable_mode and len(new_keywords) == 0  # Flag when all keywords are already scraped
     }
     
     # Start background task
     print(f"\n🚀 Starting NEW scraping task {task_id}", flush=True)
     print(f"   📄 Files: {', '.join(file_names)}", flush=True)
-    print(f"   📋 Total keywords: {len(unique_keywords)}", flush=True)
-    print(f"   📋 Allowed keywords: {sorted(unique_keywords)}", flush=True)
+    print(f"   📋 Total keywords in CSV: {len(unique_keywords)}", flush=True)
+    print(f"   📋 Keywords to process: {len(keywords_to_process)}", flush=True)
+    if resumable_mode:
+        print(f"   🔄 Resumable mode: {len(new_keywords)} new, {len(already_scraped_keywords)} skipped", flush=True)
     print(f"   📋 Content types: PDF={scrape_pdf_bool}, Image={scrape_image_bool}, YouTube={scrape_youtube_bool}", flush=True)
     background_tasks.add_task(
         background_scrape_task,
-        unique_keywords, scrape_pdf_bool, scrape_image_bool, scrape_youtube_bool, task_id, db, keyword_to_file
+        keywords_to_process, scrape_pdf_bool, scrape_image_bool, scrape_youtube_bool, task_id, db, keyword_to_file
     )
     
     return {
         "task_id": task_id, 
-        "total_keywords": len(unique_keywords),
-        "files_processed": len(files)
+        "total_keywords": len(keywords_to_process),
+        "files_processed": len(files),
+        "resumable_mode": resumable_mode,
+        "new_keywords_count": len(new_keywords),
+        "skipped_keywords_count": len(already_scraped_keywords) if resumable_mode else 0,
+        "all_keywords_scraped": resumable_mode and len(new_keywords) == 0  # Flag when all keywords are already scraped
     }
 
 @router.get("/progress/{task_id}")
@@ -356,8 +403,9 @@ async def get_items(
 
 @router.get("/download/{item_id}")
 async def download_item(item_id: int, db: Session = Depends(get_db)):
-    """Download an item - proxy through backend to avoid CORS"""
+    """Download an item - use R2 URL if available, otherwise proxy from original URL"""
     import httpx
+    from app.storage import r2_storage
     
     item = db.query(ScrapedItem).filter(ScrapedItem.id == item_id).first()
     if not item:
@@ -368,8 +416,18 @@ async def download_item(item_id: int, db: Session = Depends(get_db)):
     
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            # Fetch the file from the original URL
-            response = await client.get(item.url)
+            # Prefer R2 URL if available - generate presigned URL if needed
+            download_url = None
+            if item.r2_key:
+                from app.storage import r2_storage
+                download_url = r2_storage.get_download_url(item.r2_key)
+            elif item.r2_url:
+                download_url = item.r2_url
+            else:
+                download_url = item.url
+            
+            # Fetch the file from R2 or original URL
+            response = await client.get(download_url)
             if response.status_code != 200:
                 raise HTTPException(status_code=response.status_code, detail=f"Failed to fetch file: {response.status_code}")
             
@@ -386,23 +444,28 @@ async def download_item(item_id: int, db: Session = Depends(get_db)):
                 ext = ".pdf"
                 media_type = 'application/pdf'
             elif item.content_type == ContentType.IMAGE:
-                content_type_header = response.headers.get('content-type', '').lower()
-                url_lower = item.url.lower()
-                if '.jpg' in url_lower or '.jpeg' in url_lower or 'jpeg' in content_type_header or 'jpg' in content_type_header:
-                    ext = ".jpg"
-                    media_type = 'image/jpeg'
-                elif '.png' in url_lower or 'png' in content_type_header:
-                    ext = ".png"
-                    media_type = 'image/png'
-                elif '.gif' in url_lower or 'gif' in content_type_header:
-                    ext = ".gif"
-                    media_type = 'image/gif'
-                elif '.webp' in url_lower or 'webp' in content_type_header:
-                    ext = ".webp"
-                    media_type = 'image/webp'
+                # Use R2 storage helper if R2 URL is available
+                if item.r2_url:
+                    ext = r2_storage.get_file_extension("image", item.url)
+                    media_type = r2_storage.get_content_type("image", item.url)
                 else:
-                    ext = ".jpg"
-                    media_type = 'image/jpeg'
+                    content_type_header = response.headers.get('content-type', '').lower()
+                    url_lower = item.url.lower()
+                    if '.jpg' in url_lower or '.jpeg' in url_lower or 'jpeg' in content_type_header or 'jpg' in content_type_header:
+                        ext = ".jpg"
+                        media_type = 'image/jpeg'
+                    elif '.png' in url_lower or 'png' in content_type_header:
+                        ext = ".png"
+                        media_type = 'image/png'
+                    elif '.gif' in url_lower or 'gif' in content_type_header:
+                        ext = ".gif"
+                        media_type = 'image/gif'
+                    elif '.webp' in url_lower or 'webp' in content_type_header:
+                        ext = ".webp"
+                        media_type = 'image/webp'
+                    else:
+                        ext = ".jpg"
+                        media_type = 'image/jpeg'
             
             # Generate filename
             safe_keyword = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in item.keyword[:50])
@@ -474,6 +537,7 @@ async def download_bulk(
 ):
     """Download all items of a specific content type for a task as a ZIP file"""
     import aiofiles
+    from app.storage import r2_storage
     
     # Validate content type - enum values are lowercase
     content_type_lower = content_type.lower()
@@ -502,6 +566,7 @@ async def download_bulk(
         raise HTTPException(status_code=404, detail=f"No {content_type} items found for this task")
     
     # Create a temporary ZIP file
+    import tempfile
     temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
     temp_zip.close()
     
@@ -513,10 +578,20 @@ async def download_bulk(
             async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
                 for item in items:
                     try:
-                        # Fetch the file
-                        response = await client.get(item.url)
+                        # Prefer R2 URL if available - generate presigned URL if needed
+                        download_url = None
+                        if item.r2_key:
+                            from app.storage import r2_storage
+                            download_url = r2_storage.get_download_url(item.r2_key)
+                        elif item.r2_url:
+                            download_url = item.r2_url
+                        else:
+                            download_url = item.url
+                        
+                        # Fetch the file from R2 or original URL
+                        response = await client.get(download_url)
                         if response.status_code != 200:
-                            print(f"⚠️  Failed to fetch {item.url}: HTTP {response.status_code}")
+                            print(f"⚠️  Failed to fetch {download_url}: HTTP {response.status_code}")
                             skipped_count += 1
                             continue
                         
@@ -524,27 +599,15 @@ async def download_bulk(
                         content_length = len(response.content)
                         max_size = settings.MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
                         if content_length > max_size:
-                            print(f"⚠️  File too large for {item.url}: {content_length} bytes")
+                            print(f"⚠️  File too large for {download_url}: {content_length} bytes")
                             skipped_count += 1
                             continue
                         
-                        # Determine file extension
-                        ext = ""
-                        if item.content_type == ContentType.PDF:
-                            ext = ".pdf"
-                        elif item.content_type == ContentType.IMAGE:
-                            content_type_header = response.headers.get('content-type', '').lower()
-                            url_lower = item.url.lower()
-                            if '.jpg' in url_lower or '.jpeg' in url_lower or 'jpeg' in content_type_header or 'jpg' in content_type_header:
-                                ext = ".jpg"
-                            elif '.png' in url_lower or 'png' in content_type_header:
-                                ext = ".png"
-                            elif '.gif' in url_lower or 'gif' in content_type_header:
-                                ext = ".gif"
-                            elif '.webp' in url_lower or 'webp' in content_type_header:
-                                ext = ".webp"
-                            else:
-                                ext = ".jpg"
+                        # Determine file extension using R2 storage helper
+                        ext = r2_storage.get_file_extension(
+                            "pdf" if item.content_type == ContentType.PDF else "image",
+                            item.url
+                        )
                         
                         # Generate safe filename
                         safe_keyword = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in item.keyword[:50])

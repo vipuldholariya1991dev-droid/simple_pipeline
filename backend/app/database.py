@@ -27,6 +27,8 @@ class ScrapedItem(Base):
     file_size = Column(Integer, nullable=True)
     content_hash = Column(String(64), index=True, nullable=True)
     downloaded = Column(String(500), nullable=True)
+    r2_url = Column(Text, nullable=True)  # Cloudflare R2 storage URL
+    r2_key = Column(String(500), nullable=True)  # R2 object key/path
     task_id = Column(String(100), index=True, nullable=True)  # Track which scraping task created this item
     source_file = Column(String(255), nullable=True)  # Track which CSV file the keyword came from
     created_at = Column(DateTime, default=datetime.utcnow, index=True)

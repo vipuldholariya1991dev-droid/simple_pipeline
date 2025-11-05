@@ -17,7 +17,11 @@ function App() {
   const [downloadContentType, setDownloadContentType] = useState('PDF')
   const [downloadItems, setDownloadItems] = useState([])
   const [loadingDownloadItems, setLoadingDownloadItems] = useState(false)
+  const [showResumableMode, setShowResumableMode] = useState(false)
+  const [resumableModeFading, setResumableModeFading] = useState(false)
+  const fadeOutTimeoutRef = useRef(null)
   const progressIntervalRef = useRef(null)
+  const resumableModeStateRef = useRef({ show: false, fading: false })
   
   // Clear state on initial load
   useEffect(() => {
@@ -37,6 +41,37 @@ function App() {
         const response = await axios.get(`${API_BASE}/progress/${taskId}`)
         const progressData = response.data
         setProgress(progressData)
+        
+        // Handle resumable mode visibility with fade animations
+        const isProcessing = progressData.status === 'processing'
+        const hasResumableMode = progressData.resumable_mode
+        
+        if (isProcessing && hasResumableMode) {
+          // Show resumable mode with fade in
+          if (!resumableModeStateRef.current.show) {
+            // Clear any pending fade out timeout
+            if (fadeOutTimeoutRef.current) {
+              clearTimeout(fadeOutTimeoutRef.current)
+              fadeOutTimeoutRef.current = null
+            }
+            resumableModeStateRef.current.show = true
+            resumableModeStateRef.current.fading = false
+            setResumableModeFading(false)
+            setShowResumableMode(true)
+          }
+        } else if (!isProcessing && resumableModeStateRef.current.show && !resumableModeStateRef.current.fading) {
+          // Hide resumable mode with fade out when status changes from processing
+          resumableModeStateRef.current.fading = true
+          setResumableModeFading(true)
+          // Wait for fade out animation to complete before hiding
+          fadeOutTimeoutRef.current = setTimeout(() => {
+            resumableModeStateRef.current.show = false
+            resumableModeStateRef.current.fading = false
+            setShowResumableMode(false)
+            setResumableModeFading(false)
+            fadeOutTimeoutRef.current = null
+          }, 500) // Match CSS animation duration
+        }
         
         if (progressData.status === 'completed' || (progressData.status && progressData.status.startsWith('error'))) {
           if (progressIntervalRef.current) {
@@ -64,6 +99,9 @@ function App() {
     return () => {
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current)
+      }
+      if (fadeOutTimeoutRef.current) {
+        clearTimeout(fadeOutTimeoutRef.current)
       }
     }
   }, [taskId])
@@ -293,6 +331,13 @@ function App() {
     setProgress(null)
     setTaskId(null)  // Clear previous taskId
     setItems([])  // Clear previous items
+    setShowResumableMode(false)  // Reset resumable mode visibility
+    setResumableModeFading(false)  // Reset fade state
+    resumableModeStateRef.current = { show: false, fading: false }  // Reset ref state
+    if (fadeOutTimeoutRef.current) {
+      clearTimeout(fadeOutTimeoutRef.current)
+      fadeOutTimeoutRef.current = null
+    }
     
     const formData = new FormData()
     files.forEach(file => {
@@ -316,7 +361,11 @@ function App() {
         pdf_count: 0,
         image_count: 0,
         youtube_count: 0,
-        status: 'processing'
+        status: 'processing',
+        resumable_mode: response.data.resumable_mode || false,
+        new_keywords_count: response.data.new_keywords_count || 0,
+        skipped_keywords_count: response.data.skipped_keywords_count || 0,
+        all_keywords_scraped: response.data.all_keywords_scraped || false
       })
     } catch (error) {
       console.error('Error uploading files:', error)
@@ -445,7 +494,19 @@ function App() {
   return (
     <div className="container">
       <div className="header">
-        </div>
+        {/* Show message when all keywords are already scraped */}
+        {progress && (progress.all_keywords_scraped || (progress.status === 'completed' && progress.resumable_mode && progress.new_keywords_count === 0 && progress.skipped_keywords_count > 0)) && (
+          <div className="all-keywords-scraped-message">
+            <div className="message-icon">ℹ️</div>
+            <div className="message-content">
+              <div className="message-title">All keywords already scraped</div>
+              <div className="message-description">
+                All keywords from the selected CSV file have already been scraped. No new keywords to process.
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="upload-section">
         <h2>Upload Keywords CSV Files</h2>
@@ -512,8 +573,22 @@ function App() {
         {progress && (
           <div className="progress-section">
             <h3>Progress</h3>
+            
+            {/* Resumable Mode Indicator - Only show during processing with fade animations */}
+            {showResumableMode && progress.resumable_mode && (
+              <div className={`resumable-mode-indicator ${resumableModeFading ? 'fade-out' : 'fade-in'}`}>
+                <div className="resumable-mode-icon">✓</div>
+                <div className="resumable-mode-text">
+                  <div className="resumable-mode-label">Resumable mode:</div>
+                  <div className="resumable-mode-details">
+                    {progress.new_keywords_count || 0} new keywords will be scraped • {progress.skipped_keywords_count || 0} already-scraped keywords skipped
+                  </div>
+                </div>
+              </div>
+            )}
+            
             <p>
-              Keyword: <strong>{progress.keyword || 'Initializing...'}</strong> ({progress.current_keyword_index} / {progress.total_keywords})
+              Keyword: <strong>{progress.keyword || 'Initializing...'}</strong> ({progress.current_keyword_index || 0} / {progress.total_keywords})
             </p>
             <div className="progress-bar">
               <div

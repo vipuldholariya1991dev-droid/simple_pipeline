@@ -6,7 +6,9 @@ from app.database import ContentType, ScrapedItem
 from sqlalchemy.orm import Session
 from app.scraper.base import BaseScraper
 from app.config import settings
+from app.storage import r2_storage
 import asyncio
+import os
 
 class ScraperManager:
     def __init__(self):
@@ -92,6 +94,18 @@ class ScraperManager:
                             source_file=source_file
                         )
                         db.add(db_item)
+                        db.commit()  # Save YouTube URL to database (no download, no R2 upload)
+                        
+                        # YOUTUBE VIDEO DOWNLOAD AND R2 UPLOAD COMMENTED OUT
+                        # Only storing URLs in database for display in frontend
+                        # if r2_storage.is_available():
+                        #     try:
+                        #         # Download video using yt-dlp
+                        #         youtube_scraper = self.scrapers["youtube"]
+                        #         video_path = await youtube_scraper.download_video(url)
+                        #         ...
+                        
+                        print(f"    ✅ YouTube URL saved: {url[:80]}...")
                         existing_youtube_urls.add(url)
                         existing_hashes.add(url_hash)
                         keyword_urls.add(url)
@@ -140,6 +154,20 @@ class ScraperManager:
                             source_file=source_file
                         )
                         db.add(db_item)
+                        db.flush()  # Ensure item is saved before R2 upload
+                        
+                        # Upload image to R2
+                        if r2_storage.is_available():
+                            r2_url, r2_key = await r2_storage.upload_file(url, keyword, "image", task_id)
+                            if r2_key:  # Success if r2_key is set (r2_url may be None for presigned URLs)
+                                db_item.r2_url = r2_url  # May be None for presigned URLs
+                                db_item.r2_key = r2_key
+                                db.commit()
+                                if r2_url:
+                                    print(f"    ☁️  Image uploaded to R2: {r2_url[:80]}")
+                                else:
+                                    print(f"    ☁️  Image uploaded to R2: {r2_key}")
+                        
                         existing_image_urls.add(url)
                         keyword_urls.add(url)
                         counts["image"] += 1
@@ -194,7 +222,20 @@ class ScraperManager:
                             source_file=source_file
                         )
                         db.add(db_item)
-                        db.flush()  # Ensure item is added to session before commit
+                        db.flush()  # Ensure item is saved before R2 upload
+                        
+                        # Upload PDF to R2
+                        if r2_storage.is_available():
+                            r2_url, r2_key = await r2_storage.upload_file(url, keyword, "pdf", task_id)
+                            if r2_key:  # Success if r2_key is set (r2_url may be None for presigned URLs)
+                                db_item.r2_url = r2_url  # May be None for presigned URLs
+                                db_item.r2_key = r2_key
+                                db.commit()
+                                if r2_url:
+                                    print(f"    ☁️  PDF uploaded to R2: {r2_url[:80]}")
+                                else:
+                                    print(f"    ☁️  PDF uploaded to R2: {r2_key}")
+                        
                         existing_pdf_urls.add(url)
                         keyword_urls.add(url)
                         counts["pdf"] += 1

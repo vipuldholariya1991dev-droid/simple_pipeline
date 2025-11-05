@@ -12,6 +12,8 @@ class ScrapedItemResponse(BaseModel):
     description: Optional[str]
     file_size: Optional[int]
     downloaded: Optional[str]
+    r2_url: Optional[str]  # Cloudflare R2 storage URL
+    r2_key: Optional[str]  # R2 object key
     source_file: Optional[str]
     created_at: datetime
     
