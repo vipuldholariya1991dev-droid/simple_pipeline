@@ -126,6 +126,10 @@ async def background_scrape_task(
             image_added = counts.get("image", 0)
             youtube_added = counts.get("youtube", 0)
             
+            # Debug: Log the counts returned from scraper
+            print(f"  🔍 DEBUG: Scraper returned counts: {counts}", flush=True)
+            print(f"  🔍 DEBUG: Extracted counts - PDF={pdf_added}, IMG={image_added}, YT={youtube_added}", flush=True)
+            
             new_pdf_count = current_pdf_count + pdf_added
             new_image_count = current_image_count + image_added
             new_youtube_count = current_youtube_count + youtube_added
@@ -133,6 +137,10 @@ async def background_scrape_task(
             scraping_progress[task_id]["pdf_count"] = new_pdf_count
             scraping_progress[task_id]["image_count"] = new_image_count
             scraping_progress[task_id]["youtube_count"] = new_youtube_count
+            
+            # Debug: Verify progress was updated
+            updated_progress = scraping_progress.get(task_id, {})
+            print(f"  🔍 DEBUG: Progress after update - PDF={updated_progress.get('pdf_count', 0)}, IMG={updated_progress.get('image_count', 0)}, YT={updated_progress.get('youtube_count', 0)}", flush=True)
             
             print(f"\n✅ COMPLETED keyword '{keyword}'", flush=True)
             print(f"📊 Items added this keyword: PDF={pdf_added}, IMG={image_added}, YT={youtube_added}", flush=True)
@@ -300,7 +308,11 @@ async def get_progress(task_id: str):
     if task_id not in scraping_progress:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    return scraping_progress[task_id]
+    progress_data = scraping_progress[task_id]
+    # Debug: Log what we're returning
+    print(f"  🔍 DEBUG: Progress endpoint returning for task {task_id}: PDF={progress_data.get('pdf_count', 0)}, IMG={progress_data.get('image_count', 0)}, YT={progress_data.get('youtube_count', 0)}", flush=True)
+    
+    return progress_data
 
 @router.post("/cancel/{task_id}")
 async def cancel_task(task_id: str):

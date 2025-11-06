@@ -162,19 +162,33 @@ class R2Storage:
             # Get content type
             content_type_header = self.get_content_type(content_type, url)
             
-            # Upload to R2
+            # Upload to R2 with proper headers for downloads
             print(f"  ☁️  Uploading to R2: {r2_key}", flush=True)
-            self.client.put_object(
-                Bucket=self.bucket_name,
-                Key=r2_key,
-                Body=file_content,
-                ContentType=content_type_header,
-                Metadata={
+            
+            # Extract filename from r2_key for Content-Disposition header
+            filename = r2_key.split('/')[-1]  # Get just the filename
+            
+            # Prepare upload parameters
+            upload_params = {
+                'Bucket': self.bucket_name,
+                'Key': r2_key,
+                'Body': file_content,
+                'ContentType': content_type_header,
+                'Metadata': {
                     'original-url': url,
                     'keyword': keyword,
                     'task-id': task_id
                 }
-            )
+            }
+            
+            # Add Content-Disposition header for proper downloads
+            # This ensures browsers download the file with the correct filename
+            upload_params['ContentDisposition'] = f'attachment; filename="{filename}"'
+            
+            # Add Cache-Control for better caching behavior
+            upload_params['CacheControl'] = 'public, max-age=31536000'  # 1 year cache
+            
+            self.client.put_object(**upload_params)
             
             # Generate public URL
             # Note: Store r2_key in database, generate presigned URLs on-demand for downloads
@@ -201,14 +215,26 @@ class R2Storage:
             return None, None
     
     def get_public_url(self, r2_key: str) -> str:
-        """Generate public URL for an R2 object"""
+        """
+        Generate public URL for an R2 object
+        Uses R2_PUBLIC_URL if set (custom domain or Public Development URL)
+        Otherwise falls back to endpoint URL (may require authentication)
+        """
         if settings.R2_PUBLIC_URL:
             return f"{settings.R2_PUBLIC_URL.rstrip('/')}/{r2_key}"
         else:
+            # Fallback - this may not work if bucket is private
+            # Better to use get_download_url() which generates presigned URLs
             return f"{settings.R2_ENDPOINT_URL}/{self.bucket_name}/{r2_key}"
     
-    def get_download_url(self, r2_key: str, expires_in: int = 3600) -> str:
-        """Generate download URL (presigned if bucket is private, public if bucket is public)"""
+    def get_download_url(self, r2_key: str, expires_in: int = 86400) -> str:
+        """
+        Generate download URL (presigned if bucket is private, public if bucket is public)
+        
+        Args:
+            r2_key: The R2 object key
+            expires_in: Expiration time in seconds (default: 24 hours for better compatibility)
+        """
         if not self.is_available():
             return None
         
@@ -218,9 +244,16 @@ class R2Storage:
         else:
             try:
                 # Generate presigned URL (works for both public and private buckets)
+                # Use longer expiration for video downloads (24 hours default)
                 url = self.client.generate_presigned_url(
                     'get_object',
-                    Params={'Bucket': self.bucket_name, 'Key': r2_key},
+                    Params={
+                        'Bucket': self.bucket_name, 
+                        'Key': r2_key,
+                        # Add response headers for proper download behavior
+                        'ResponseContentDisposition': f'attachment; filename="{r2_key.split("/")[-1]}"',
+                        'ResponseContentType': 'video/mp4'
+                    },
                     ExpiresIn=expires_in
                 )
                 return url

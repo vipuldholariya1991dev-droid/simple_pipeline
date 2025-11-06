@@ -24,7 +24,7 @@ wheels/
 *.egg
 
 # Node.js
-# node_modules/  # Commented out - user wants to include node_modules
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

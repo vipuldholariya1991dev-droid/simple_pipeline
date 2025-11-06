@@ -94,18 +94,60 @@ class ScraperManager:
                             source_file=source_file
                         )
                         db.add(db_item)
-                        db.commit()  # Save YouTube URL to database (no download, no R2 upload)
+                        db.flush()  # Ensure item is saved to get the item ID
+                        db.refresh(db_item)  # Refresh to get the ID
                         
-                        # YOUTUBE VIDEO DOWNLOAD AND R2 UPLOAD COMMENTED OUT
-                        # Only storing URLs in database for display in frontend
-                        # if r2_storage.is_available():
-                        #     try:
-                        #         # Download video using yt-dlp
-                        #         youtube_scraper = self.scrapers["youtube"]
-                        #         video_path = await youtube_scraper.download_video(url)
-                        #         ...
+                        # Download and upload YouTube video to R2
+                        if r2_storage.is_available():
+                            try:
+                                # Download video using yt-dlp
+                                youtube_scraper = self.scrapers["youtube"]
+                                video_path = await youtube_scraper.download_video(url)
+                                
+                                if video_path and os.path.exists(video_path):
+                                    try:
+                                        # Upload video file to R2 with video/mp4 content type
+                                        r2_url, r2_key = await r2_storage.upload_file(
+                                            url, 
+                                            keyword, 
+                                            "youtube", 
+                                            task_id,
+                                            item_id=db_item.id,
+                                            file_path=video_path
+                                        )
+                                        
+                                        if r2_key:  # Success if r2_key is set
+                                            db_item.r2_url = r2_url  # May be None for presigned URLs
+                                            db_item.r2_key = r2_key
+                                            db.commit()
+                                            if r2_url:
+                                                print(f"    ☁️  YouTube video uploaded to R2: {r2_url[:80]}")
+                                            else:
+                                                print(f"    ☁️  YouTube video uploaded to R2: {r2_key} (video/mp4)")
+                                    finally:
+                                        # Clean up temporary video file and directory
+                                        if video_path and os.path.exists(video_path):
+                                            os.unlink(video_path)
+                                            # Also remove parent directory if it's a temp dir
+                                            video_dir = os.path.dirname(video_path)
+                                            if video_dir and os.path.exists(video_dir):
+                                                try:
+                                                    os.rmdir(video_dir)
+                                                except:
+                                                    pass  # Directory might not be empty
+                                            print(f"    🗑️  Cleaned up temporary video file: {video_path}")
+                                else:
+                                    print(f"    ⚠️  Failed to download YouTube video: {url[:80]}...")
+                                    db.commit()  # Still save the URL even if download fails
+                            except Exception as e:
+                                print(f"    ⚠️  Failed to upload YouTube video to R2: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                db.commit()  # Still save the URL even if upload fails
+                        else:
+                            db.commit()  # Save URL if R2 is not available
                         
-                        print(f"    ✅ YouTube URL saved: {url[:80]}...")
+                        print(f"    ✅ YouTube video saved: {url[:80]}...")
                         existing_youtube_urls.add(url)
                         existing_hashes.add(url_hash)
                         keyword_urls.add(url)
