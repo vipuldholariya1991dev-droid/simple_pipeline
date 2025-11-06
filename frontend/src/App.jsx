@@ -577,7 +577,11 @@ function App() {
             {/* Resumable Mode Indicator - Only show during processing with fade animations */}
             {showResumableMode && progress.resumable_mode && (
               <div className={`resumable-mode-indicator ${resumableModeFading ? 'fade-out' : 'fade-in'}`}>
-                <div className="resumable-mode-icon">✓</div>
+                <div className="resumable-mode-icon">
+                  <svg className="spinner-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle className="spinner-circle" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"></circle>
+                  </svg>
+                </div>
                 <div className="resumable-mode-text">
                   <div className="resumable-mode-label">Resumable mode:</div>
                   <div className="resumable-mode-details">
