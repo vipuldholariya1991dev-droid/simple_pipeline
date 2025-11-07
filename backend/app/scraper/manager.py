@@ -326,13 +326,10 @@ class ScraperManager:
                         existing_pdf_urls.add(url)
                         keyword_urls.add(url)
                         counts["pdf"] += 1
-                        print(f"    ✅ Added PDF {counts['pdf']}/{settings.MAX_PDF_RESULTS_PER_KEYWORD}: {url[:80]}")
+                        print(f"    ✅ Added PDF {counts['pdf']}: {url[:80]}")
                         print(f"    📊 PDF count for keyword '{keyword}': {counts['pdf']}")
                         
-                        # Stop if we've reached max_results for this keyword
-                        if counts["pdf"] >= settings.MAX_PDF_RESULTS_PER_KEYWORD:
-                            print(f"    ✅ Reached max PDFs ({settings.MAX_PDF_RESULTS_PER_KEYWORD}) for keyword '{keyword}'")
-                            break
+                        # No limit check - collect all available PDFs
                     except Exception as e:
                         print(f"    ❌ Error adding PDF to database: {e}")
                         print(f"       URL: {url[:80]}")

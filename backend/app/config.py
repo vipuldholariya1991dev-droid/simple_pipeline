@@ -13,8 +13,9 @@ class Settings(BaseSettings):
     
     # Scraping - Set to 2 items per keyword (for Images and YouTube)
     MAX_RESULTS_PER_KEYWORD: int = 2
-    # PDF scraping - Set to maximum items per keyword (higher limit for PDFs)
-    MAX_PDF_RESULTS_PER_KEYWORD: int = 50  # Maximum PDFs per keyword
+    # PDF scraping - No limit, will fetch maximum available PDFs (Exa API allows 100 results per query)
+    # Multiple query variations are used to maximize results
+    MAX_PDF_RESULTS_PER_KEYWORD: int = 9999  # Effectively unlimited - fetches all available PDFs
     REQUEST_TIMEOUT: int = 30
     USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     

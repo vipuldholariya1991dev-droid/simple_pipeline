@@ -78,37 +78,34 @@ class PDFScraper(BaseScraper):
             ]
             
             urls = set()
+            # Use Exa API maximum (100 results per query) to get maximum PDFs
+            EXA_MAX_RESULTS_PER_QUERY = 100
+            
             for query_idx, search_query in enumerate(queries, 1):
-                if len(urls) >= max_results:
-                    break
-                
+                # Continue through all queries to maximize results (no early break)
                 print(f"    📝 Exa Query {query_idx}/{len(queries)}: '{search_query}'", flush=True)
                 
                 try:
                     # Run Exa search in executor
-                    def run_exa_search(query, max_res):
+                    def run_exa_search(query):
                         # Search for PDFs using Exa API
-                        # Note: Exa will search semantically - we filter results to PDFs only
-                        # Request more results than needed since we filter for PDFs only
-                        # Exa API supports up to 100 results, so request enough to get max_res PDFs
-                        results_to_request = min(max_res * 3, 100)  # Request 3x but cap at 100 (Exa API limit)
+                        # Request maximum allowed by Exa API (100 results per query)
+                        # We'll filter for PDFs and collect all unique ones across all queries
                         results = exa.search(
                             query=query,
-                            num_results=results_to_request,
+                            num_results=EXA_MAX_RESULTS_PER_QUERY,  # Use Exa's maximum
                         )
                         return results.results if results.results else []
                     
                     results = await loop.run_in_executor(
                         None,
                         run_exa_search,
-                        search_query,
-                        max_results
+                        search_query
                     )
                     
                     found_count = 0
                     for result in results:
-                        if len(urls) >= max_results:
-                            break
+                        # No limit check - collect all PDFs found
                         
                         url = result.url if hasattr(result, 'url') else str(result)
                         if not url:
@@ -146,7 +143,8 @@ class PDFScraper(BaseScraper):
             import traceback
             traceback.print_exc()
         
-        return items[:max_results]
+        # Return all items found (no limit - maximum PDFs)
+        return items
     
     def is_pdf_url(self, url: str) -> bool:
         """Check if URL is a direct PDF link - only accepts URLs ending with .pdf"""
