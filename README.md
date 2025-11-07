@@ -99,17 +99,60 @@ A modern, scalable web scraping pipeline that extracts PDFs, Images, and YouTube
 1. **Upload CSV Files**: Select one or more CSV files containing keywords (one keyword per line)
 2. **Select Content Types**: Check PDF, Image, and/or YouTube checkboxes
 3. **Start Scraping**: Click "Start Scraping" and monitor real-time progress
+   - System automatically finds and downloads content
+   - All content is automatically uploaded to Cloudflare R2
+   - Progress updates in real-time showing PDF, Image, and YouTube counts
 4. **View Results**: See scraped items in the table with all metadata
+   - Each item shows: title, URL, content type, source file, and R2 storage info
 5. **Download Results**: 
    - **Download All**: Click "Download Scraped Data" to download all items from current session
-   - **Download by Source File**: Select a source CSV file from dropdown and download all items for that file (includes items from all scraping sessions)
+   - **Download by Source File**: 
+     - Go to "Download Scraped Data" page
+     - Select a source CSV file from dropdown menu
+     - Click download button to get CSV with all items for that file
+     - CSV includes presigned URLs (7-day expiration) for direct file access
+     - Includes items from all scraping sessions for that source file
+     - Automatically filters to match current CSV file keywords
 
 ### Features Explained
 
-- **Automatic R2 Storage**: All scraped content (PDFs, Images, YouTube videos) is automatically uploaded to Cloudflare R2
-- **Presigned URLs**: CSV downloads include presigned URLs (7-day expiration) for direct file access
-- **Source File Tracking**: Each scraped item is tagged with its source CSV file for easy filtering
-- **Resumable Scraping**: Re-uploading the same CSV file will skip already-scraped keywords
+- **Automatic R2 Storage**: 
+  - All scraped content (PDFs, Images, YouTube videos) is automatically uploaded to Cloudflare R2
+  - Files are organized by type: `pdfs/`, `images/`, `youtube/`
+  - Each file gets a unique R2 key and public URL
+  - R2 credentials are configured by default (can be overridden)
+  - Proper error handling ensures items are saved even if R2 upload fails
+
+- **Presigned URLs**: 
+  - CSV downloads include presigned URLs (7-day expiration) for direct file access
+  - URLs work directly in browsers - no authentication needed
+  - Valid for 7 days from generation
+  - Includes proper Content-Disposition headers for downloads
+  - Works even if R2 bucket is private
+
+- **Source File Tracking**: 
+  - Each scraped item is tagged with its source CSV file (`source_file` column)
+  - Download CSV files filtered by specific input CSV file
+  - Includes items from all scraping sessions for that source file
+  - Automatically filters by keywords from the most recent scraping session
+  - Ensures downloaded CSV matches current CSV file content
+
+- **Resumable Scraping**: 
+  - Re-uploading the same CSV file will skip already-scraped keywords
+  - Prevents duplicate work across sessions
+  - Tracks by URL and content hash
+
+- **PDF Search with Exa API**:
+  - High-quality semantic search (understands meaning, not just keywords)
+  - Multiple query variations for better results
+  - Automatically filters for PDF file types
+  - Default API key included (can be overridden)
+
+- **YouTube Video Download**:
+  - Multi-strategy retry system for reliable downloads
+  - Tries different formats and player clients automatically
+  - Downloads videos as MP4 files
+  - Filters out shorts, music videos, and irrelevant content
 
 ## Project Structure
 
@@ -171,24 +214,35 @@ Edit `backend/app/config.py` to change database settings.
 
 ### Cloudflare R2 Storage
 
-Default credentials are set in `backend/app/config.py`. To use your own R2 bucket:
+**Default credentials are included in `backend/app/config.py`** - the system works out of the box!
+
+To use your own R2 bucket:
 
 1. Create a Cloudflare R2 bucket
 2. Generate R2 API tokens (Access Key ID and Secret Access Key)
-3. Update `backend/app/config.py` or set environment variables:
+3. Enable "Public Access" in R2 bucket settings (or use custom domain)
+4. Get your Public Development URL (if using public access)
+5. Update `backend/app/config.py` or set environment variables:
    - `R2_ACCOUNT_ID` - Your Cloudflare account ID
    - `R2_BUCKET_NAME` - Your R2 bucket name
    - `R2_ACCESS_KEY_ID` - R2 access key
    - `R2_SECRET_ACCESS_KEY` - R2 secret key
-   - `R2_PUBLIC_URL` - Public development URL (optional, for public access)
+   - `R2_ENDPOINT_URL` - R2 endpoint URL (default: `https://{ACCOUNT_ID}.r2.cloudflarestorage.com`)
+   - `R2_PUBLIC_URL` - Public development URL (e.g., `https://pub-xxxxx.r2.dev`) - Optional but recommended
+
+**Note**: All scraped content (PDFs, Images, YouTube videos) is automatically uploaded to R2. Files are organized in folders: `pdfs/`, `images/`, `youtube/`.
 
 ### Exa API (for PDF Search)
 
-Default API key is set in `backend/app/config.py`. To use your own:
+**Default API key is included in `backend/app/config.py`** - PDF search works out of the box!
+
+To use your own Exa API key:
 
 1. Get API key from https://exa.ai
 2. Update `backend/app/config.py` or set environment variable:
    - `EXA_API_KEY` - Your Exa API key
+
+**Note**: The Exa API provides high-quality semantic search for PDFs, finding documents based on meaning rather than just keyword matching. This results in more relevant PDF results.
 
 ## API Endpoints
 
@@ -200,7 +254,11 @@ Default API key is set in `backend/app/config.py`. To use your own:
 ### Downloads
 - `GET /api/scraping/download-bulk` - Download items as ZIP (PDF/Image)
 - `GET /api/scraping/download-youtube-csv` - Download YouTube items as CSV
-- `GET /api/scraping/download-source-file-csv` - Download all items for a specific source CSV file (includes presigned URLs)
+- `GET /api/scraping/download-source-file-csv` - Download all items for a specific source CSV file
+  - Parameters: `source_file` (required), `task_id` (optional)
+  - Returns CSV with all columns including presigned URLs (7-day expiration)
+  - Filters items by keywords from most recent scraping session
+  - Includes items from all scraping sessions for that source file
 - `GET /api/scraping/download/{item_id}` - Download a single item
 
 ### Source Files
@@ -212,16 +270,36 @@ Default API key is set in `backend/app/config.py`. To use your own:
 ## Key Features Details
 
 ### Cloudflare R2 Storage
-- All scraped content is automatically uploaded to R2
-- Files are organized by content type: `pdfs/`, `images/`, `youtube/`
-- Each file gets a unique R2 key and public URL
-- Presigned URLs are generated for CSV downloads (7-day expiration)
+- **Automatic Upload**: All scraped content (PDFs, Images, YouTube videos) is automatically uploaded to R2
+- **File Organization**: Files are organized by content type:
+  - `pdfs/keyword_pdf_hash.pdf`
+  - `images/keyword_image_hash.jpg`
+  - `youtube/item_XXX_keyword_video.mp4`
+- **R2 Keys**: Each file gets a unique R2 key stored in database
+- **Public URLs**: Public URLs are generated if `R2_PUBLIC_URL` is configured
+- **Presigned URLs**: Generated on-demand for CSV downloads (7-day expiration)
+- **Error Handling**: Items are saved to database even if R2 upload fails
+- **Content Headers**: Proper Content-Disposition and Cache-Control headers for browser downloads
 
 ### CSV Download with Presigned URLs
-- Download CSV files filtered by source file
-- Includes presigned URLs for direct file access (valid for 7 days)
-- URLs work directly in browsers - no authentication needed
-- Includes all metadata: id, keyword, URL, content type, title, task_id, source_file, created_at, R2 URL, R2 key
+- **Source File Filtering**: Download CSV files filtered by specific input CSV file
+- **Keyword Matching**: Automatically filters items to match keywords from most recent scraping session
+- **All Sessions**: Includes items from all scraping sessions for that source file
+- **Presigned URLs**: Includes presigned URLs (7-day expiration) for direct file access
+  - Click URLs directly in CSV to download/view files
+  - No authentication needed for 7 days
+  - Works even if R2 bucket is private
+- **Complete Metadata**: Includes all columns:
+  - `id` - Database ID
+  - `keyword` - Search keyword
+  - `scraped_url` - Original URL
+  - `content_type` - PDF, IMAGE, or YOUTUBE
+  - `title` - Item title
+  - `task_id` - Scraping session ID
+  - `source_file` - Source CSV file name
+  - `created_at` - Timestamp
+  - `cloudflarer2_url` - Presigned URL (7-day expiration) for direct file access
+  - `cloudflarer2_key` - R2 storage key
 
 ### PDF Scraping with Exa API
 - Uses Exa API for high-quality semantic PDF search
@@ -236,10 +314,13 @@ Default API key is set in `backend/app/config.py`. To use your own:
 - Automatically uploads to R2 storage
 
 ### Source File Tracking
-- Each scraped item is tagged with its source CSV file
-- Download CSV files filtered by specific input files
-- Includes items from all scraping sessions for a given source file
-- Filtered by keywords from the most recent scraping session
+- **Automatic Tagging**: Each scraped item is tagged with its source CSV file (`source_file` column)
+- **Multi-File Support**: Upload multiple CSV files in one session - each item tracks its source
+- **Filtered Downloads**: Download CSV files filtered by specific input CSV file
+- **All Sessions**: Includes items from all scraping sessions for a given source file
+- **Smart Filtering**: Automatically filters by keywords from the most recent scraping session
+  - Ensures downloaded CSV matches current CSV file content
+  - Prevents old items from different CSV versions from appearing
 
 ## Troubleshooting
 
@@ -248,9 +329,12 @@ Default API key is set in `backend/app/config.py`. To use your own:
 - Check that `exa-py` package is installed: `pip install exa-py`
 
 ### R2 Upload Failures
-- Verify R2 credentials are set correctly in `backend/app/config.py`
-- Check that R2 bucket exists and credentials have write permissions
-- Ensure `boto3` package is installed: `pip install boto3`
+- **Default Credentials**: Default R2 credentials are included in `backend/app/config.py` - should work out of the box
+- **Check Credentials**: Verify R2 credentials are set correctly in `backend/app/config.py` if using custom bucket
+- **Bucket Permissions**: Check that R2 bucket exists and credentials have write permissions
+- **Package Installation**: Ensure `boto3` package is installed: `pip install boto3`
+- **Public Access**: If using public URLs, enable "Public Access" in R2 bucket settings
+- **Error Handling**: Items are still saved to database even if R2 upload fails - check logs for details
 
 ### YouTube Downloads Failing
 - Check internet connection
