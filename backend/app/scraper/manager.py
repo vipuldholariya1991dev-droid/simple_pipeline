@@ -6,6 +6,7 @@ from app.database import ContentType, ScrapedItem
 from sqlalchemy.orm import Session
 from app.scraper.base import BaseScraper
 from app.config import settings
+# Import R2 storage - will be re-checked at runtime
 from app.storage import r2_storage
 import asyncio
 import os
@@ -98,7 +99,12 @@ class ScraperManager:
                         db.refresh(db_item)  # Refresh to get the ID
                         
                         # Download and upload YouTube video to R2
-                        if r2_storage.is_available():
+                        # Re-import to ensure we have the latest R2 storage instance
+                        from app.storage import r2_storage as current_r2_storage
+                        print(f"    🔍 Checking R2 availability for YouTube video upload...", flush=True)
+                        print(f"    🔍 R2 client exists: {current_r2_storage.client is not None if hasattr(current_r2_storage, 'client') else 'N/A'}", flush=True)
+                        if current_r2_storage.is_available():
+                            print(f"    ✅ R2 storage is available, downloading and uploading YouTube video...", flush=True)
                             try:
                                 # Download video using yt-dlp
                                 youtube_scraper = self.scrapers["youtube"]
@@ -107,7 +113,7 @@ class ScraperManager:
                                 if video_path and os.path.exists(video_path):
                                     try:
                                         # Upload video file to R2 with video/mp4 content type
-                                        r2_url, r2_key = await r2_storage.upload_file(
+                                        r2_url, r2_key = await current_r2_storage.upload_file(
                                             url, 
                                             keyword, 
                                             "youtube", 
@@ -199,16 +205,35 @@ class ScraperManager:
                         db.flush()  # Ensure item is saved before R2 upload
                         
                         # Upload image to R2
-                        if r2_storage.is_available():
-                            r2_url, r2_key = await r2_storage.upload_file(url, keyword, "image", task_id)
-                            if r2_key:  # Success if r2_key is set (r2_url may be None for presigned URLs)
-                                db_item.r2_url = r2_url  # May be None for presigned URLs
-                                db_item.r2_key = r2_key
-                                db.commit()
-                                if r2_url:
-                                    print(f"    ☁️  Image uploaded to R2: {r2_url[:80]}")
+                        # Re-import to ensure we have the latest R2 storage instance
+                        from app.storage import r2_storage as current_r2_storage
+                        print(f"    🔍 Checking R2 availability for image upload...", flush=True)
+                        print(f"    🔍 R2 client exists: {current_r2_storage.client is not None if hasattr(current_r2_storage, 'client') else 'N/A'}", flush=True)
+                        if current_r2_storage.is_available():
+                            print(f"    ✅ R2 storage is available, uploading image...", flush=True)
+                            try:
+                                r2_url, r2_key = await current_r2_storage.upload_file(url, keyword, "image", task_id)
+                                if r2_key:  # Success if r2_key is set (r2_url may be None for presigned URLs)
+                                    db_item.r2_url = r2_url  # May be None for presigned URLs
+                                    db_item.r2_key = r2_key
+                                    db.commit()
+                                    if r2_url:
+                                        print(f"    ☁️  Image uploaded to R2: {r2_url[:80]}")
+                                    else:
+                                        print(f"    ☁️  Image uploaded to R2: {r2_key}")
                                 else:
-                                    print(f"    ☁️  Image uploaded to R2: {r2_key}")
+                                    print(f"    ⚠️  Failed to upload image to R2, but saving URL to database")
+                                    db.commit()  # Still save the item even if R2 upload fails
+                            except Exception as e:
+                                print(f"    ⚠️  Error uploading image to R2: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                db.commit()  # Still save the item even if R2 upload fails
+                        else:
+                            print(f"    ⚠️  R2 storage not available, saving image URL only", flush=True)
+                            from app.storage import r2_storage as current_r2_storage
+                            print(f"    🔍 R2 client status: {current_r2_storage.client is not None if hasattr(current_r2_storage, 'client') else 'N/A'}", flush=True)
+                            db.commit()  # Save item even if R2 is not available
                         
                         existing_image_urls.add(url)
                         keyword_urls.add(url)
@@ -267,16 +292,35 @@ class ScraperManager:
                         db.flush()  # Ensure item is saved before R2 upload
                         
                         # Upload PDF to R2
-                        if r2_storage.is_available():
-                            r2_url, r2_key = await r2_storage.upload_file(url, keyword, "pdf", task_id)
-                            if r2_key:  # Success if r2_key is set (r2_url may be None for presigned URLs)
-                                db_item.r2_url = r2_url  # May be None for presigned URLs
-                                db_item.r2_key = r2_key
-                                db.commit()
-                                if r2_url:
-                                    print(f"    ☁️  PDF uploaded to R2: {r2_url[:80]}")
+                        # Re-import to ensure we have the latest R2 storage instance
+                        from app.storage import r2_storage as current_r2_storage
+                        print(f"    🔍 Checking R2 availability for PDF upload...", flush=True)
+                        print(f"    🔍 R2 client exists: {current_r2_storage.client is not None if hasattr(current_r2_storage, 'client') else 'N/A'}", flush=True)
+                        if current_r2_storage.is_available():
+                            print(f"    ✅ R2 storage is available, uploading PDF...", flush=True)
+                            try:
+                                r2_url, r2_key = await current_r2_storage.upload_file(url, keyword, "pdf", task_id)
+                                if r2_key:  # Success if r2_key is set (r2_url may be None for presigned URLs)
+                                    db_item.r2_url = r2_url  # May be None for presigned URLs
+                                    db_item.r2_key = r2_key
+                                    db.commit()
+                                    if r2_url:
+                                        print(f"    ☁️  PDF uploaded to R2: {r2_url[:80]}")
+                                    else:
+                                        print(f"    ☁️  PDF uploaded to R2: {r2_key}")
                                 else:
-                                    print(f"    ☁️  PDF uploaded to R2: {r2_key}")
+                                    print(f"    ⚠️  Failed to upload PDF to R2, but saving URL to database")
+                                    db.commit()  # Still save the item even if R2 upload fails
+                            except Exception as e:
+                                print(f"    ⚠️  Error uploading PDF to R2: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                db.commit()  # Still save the item even if R2 upload fails
+                        else:
+                            print(f"    ⚠️  R2 storage not available, saving PDF URL only", flush=True)
+                            from app.storage import r2_storage as current_r2_storage
+                            print(f"    🔍 R2 client status: {current_r2_storage.client is not None if hasattr(current_r2_storage, 'client') else 'N/A'}", flush=True)
+                            db.commit()  # Save item even if R2 is not available
                         
                         existing_pdf_urls.add(url)
                         keyword_urls.add(url)

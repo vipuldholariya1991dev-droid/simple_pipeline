@@ -498,6 +498,174 @@ async def download_item(item_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error downloading: {str(e)}")
 
+@router.get("/source-files")
+async def get_source_files(
+    task_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get unique source files (CSV files) for a task"""
+    if not task_id:
+        return {"source_files": []}
+    
+    # First, try to get source files from progress tracking (files that were uploaded)
+    if task_id in scraping_progress:
+        progress_data = scraping_progress[task_id]
+        uploaded_files = progress_data.get("files", [])
+        if uploaded_files:
+            # Return the files that were uploaded, even if they don't have items yet
+            return {"source_files": uploaded_files}
+    
+    # Fallback: Get distinct source files from database (files that have items)
+    # This handles cases where progress tracking might not be available
+    source_files = db.query(ScrapedItem.source_file).filter(
+        ScrapedItem.task_id == task_id,
+        ScrapedItem.source_file.isnot(None)
+    ).distinct().all()
+    
+    # Extract file names from tuples
+    file_names = [file[0] for file in source_files if file[0]]
+    
+    return {"source_files": file_names}
+
+@router.get("/download-source-file-csv")
+async def download_source_file_csv(
+    source_file: str,
+    task_id: Optional[str] = None,  # Optional - kept for backward compatibility but not used
+    db: Session = Depends(get_db)
+):
+    """Download all items for a specific source file as CSV with all columns
+    Filters items to only include keywords that match the current CSV file content.
+    If task_id is provided, uses keywords from that task. Otherwise, uses keywords from the most recent task.
+    """
+    from app.storage import r2_storage
+    
+    if not source_file:
+        raise HTTPException(status_code=400, detail="source_file is required")
+    
+    # First, get the keywords that were actually scraped for this source_file
+    # We'll use the most recent task_id for this source_file, or the provided task_id
+    target_task_id = task_id
+    
+    if not target_task_id:
+        # Find the most recent task_id that used this source_file
+        most_recent_task = db.query(ScrapedItem.task_id).filter(
+            ScrapedItem.source_file == source_file,
+            ScrapedItem.task_id.isnot(None)
+        ).order_by(ScrapedItem.created_at.desc()).first()
+        
+        if most_recent_task:
+            target_task_id = most_recent_task[0]
+            print(f"📋 Using most recent task_id for {source_file}: {target_task_id}", flush=True)
+    
+    # Get unique keywords from the target task (these are the keywords that match the current CSV)
+    valid_keywords = set()
+    if target_task_id:
+        keyword_rows = db.query(ScrapedItem.keyword).filter(
+            ScrapedItem.source_file == source_file,
+            ScrapedItem.task_id == target_task_id
+        ).distinct().all()
+        valid_keywords = {row[0] for row in keyword_rows if row[0]}
+        print(f"📋 Found {len(valid_keywords)} unique keywords in task {target_task_id} for {source_file}", flush=True)
+    
+    # Get all items for this source file, but filter by valid keywords if we have them
+    query = db.query(ScrapedItem).filter(
+        ScrapedItem.source_file == source_file
+    )
+    
+    # Filter by valid keywords if we found them (to match current CSV content)
+    if valid_keywords:
+        query = query.filter(ScrapedItem.keyword.in_(valid_keywords))
+        print(f"🔍 Filtering items to match {len(valid_keywords)} keywords from current CSV", flush=True)
+    
+    items = query.order_by(ScrapedItem.created_at.asc()).all()
+    
+    # Log breakdown for debugging
+    if items:
+        unique_keywords = set(item.keyword for item in items)
+        unique_task_ids = set(item.task_id for item in items if item.task_id)
+        content_type_counts = {}
+        for item in items:
+            ct = item.content_type.value if hasattr(item.content_type, 'value') else str(item.content_type)
+            content_type_counts[ct] = content_type_counts.get(ct, 0) + 1
+        
+        print(f"📊 CSV Download for {source_file}:", flush=True)
+        print(f"   Total items: {len(items)}", flush=True)
+        print(f"   Unique keywords: {len(unique_keywords)}", flush=True)
+        print(f"   Scraping sessions (task_ids): {len(unique_task_ids)}", flush=True)
+        print(f"   Content type breakdown: {content_type_counts}", flush=True)
+    
+    if not items:
+        raise HTTPException(status_code=404, detail=f"No items found for source file: {source_file}")
+    
+    # Create CSV content
+    import io
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header with all required columns
+    writer.writerow([
+        'id',
+        'keyword',
+        'scraped_url',
+        'content_type',
+        'title',
+        'task_id',
+        'source_file',
+        'created_at',
+        'cloudflarer2_dashboard_url',  # Dashboard URL - click to navigate to Cloudflare dashboard (shows objects list filtered by prefix)
+        'cloudflarer2_download_url',  # Presigned URL (7 days) - click to download/view file directly
+        'cloudflarer2_key'
+    ])
+    
+    # Write data rows
+    for item in items:
+        # Generate dashboard URL for Cloudflare dashboard navigation
+        # Note: Cloudflare R2 dashboard doesn't support direct deep-linking to object details pages
+        # Dashboard URL will show objects list filtered by prefix, where user can find the specific item
+        r2_dashboard_url = None
+        if item.r2_key:
+            if r2_storage.is_available():
+                r2_dashboard_url = r2_storage.get_dashboard_url(item.r2_key)
+        
+        # Generate presigned URL for direct file download/view (7 days expiration)
+        # This URL allows direct file access but cannot navigate to dashboard
+        r2_presigned_url = None
+        if item.r2_key:
+            if r2_storage.is_available():
+                # Generate presigned URL for 7 days (604800 seconds)
+                r2_presigned_url = r2_storage.get_download_url(item.r2_key, expires_in=604800, force_presigned=True)
+        
+        writer.writerow([
+            item.id,
+            item.keyword,
+            item.url,
+            item.content_type.value if hasattr(item.content_type, 'value') else str(item.content_type),
+            item.title or '',
+            item.task_id or '',
+            item.source_file or '',
+            item.created_at.isoformat() if item.created_at else '',
+            r2_dashboard_url or '',  # Dashboard URL - navigates to Cloudflare dashboard objects list
+            r2_presigned_url or '',  # Presigned URL - direct file download/view (7 days)
+            item.r2_key or ''
+        ])
+    
+    csv_content = output.getvalue()
+    output.close()
+    
+    # Generate filename (remove .csv extension if present, then add it back)
+    safe_filename = source_file.replace('.csv', '') if source_file.endswith('.csv') else source_file
+    csv_filename = f"{safe_filename}_scraped_data.csv"
+    
+    # Return CSV file
+    return Response(
+        content=csv_content,
+        media_type='text/csv',
+        headers={
+            'Content-Disposition': f'attachment; filename="{csv_filename}"',
+            'Content-Length': str(len(csv_content.encode('utf-8')))
+        }
+    )
+
 @router.get("/download-youtube-csv")
 async def download_youtube_csv(
     task_id: str,

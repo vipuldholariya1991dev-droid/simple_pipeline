@@ -21,15 +21,16 @@ class Settings(BaseSettings):
     MAX_DOWNLOAD_SIZE_MB: int = 500
     
     # Exa API (for PDF search - optional, get API key from https://exa.ai)
-    EXA_API_KEY: str = os.getenv("EXA_API_KEY", "")
+    # Default value from restart script if not set in environment
+    EXA_API_KEY: str = os.getenv("EXA_API_KEY", "ab2d74f4-77d7-4c23-a223-96a67c2075e3")
     
     # Cloudflare R2 Storage
     R2_ACCOUNT_ID: str = os.getenv("R2_ACCOUNT_ID", "4c9e60a2dc0dcf475cc907f3cd645f1d")
     R2_BUCKET_NAME: str = os.getenv("R2_BUCKET_NAME", "assetblue")
-    R2_ACCESS_KEY_ID: str = os.getenv("R2_ACCESS_KEY_ID", "")
-    R2_SECRET_ACCESS_KEY: str = os.getenv("R2_SECRET_ACCESS_KEY", "")
+    R2_ACCESS_KEY_ID: str = os.getenv("R2_ACCESS_KEY_ID", "5068efe15645d5f08368a5b22a811746")
+    R2_SECRET_ACCESS_KEY: str = os.getenv("R2_SECRET_ACCESS_KEY", "f87a4caf85c89ada324027f17911e49dd66ea3e0953ce3c313960373d7a6a3a9")
     R2_ENDPOINT_URL: str = os.getenv("R2_ENDPOINT_URL", "https://4c9e60a2dc0dcf475cc907f3cd645f1d.r2.cloudflarestorage.com")
-    R2_PUBLIC_URL: str = os.getenv("R2_PUBLIC_URL", "")  # Public URL if using custom domain, otherwise will use R2 URL
+    R2_PUBLIC_URL: str = os.getenv("R2_PUBLIC_URL", "https://pub-57951bb0b40b4b43ab4269e87754d108.r2.dev")  # Public URL if using custom domain, otherwise will use R2 URL
     
     # Oxylabs Proxy (for YouTube scraping)
     OXYLABS_USERNAME: str = os.getenv("OXYLABS_USERNAME", "usrsh10151")

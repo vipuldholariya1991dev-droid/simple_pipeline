@@ -16,17 +16,22 @@ class PDFScraper(BaseScraper):
     
     def __init__(self):
         super().__init__()
-        if EXA_AVAILABLE and settings.EXA_API_KEY:
-            print(f"✅ PDF Scraper initialized - using Exa API")
+        # Re-check settings at initialization time (settings may have changed)
+        from app.config import settings as current_settings
+        if EXA_AVAILABLE and current_settings.EXA_API_KEY:
+            print(f"✅ PDF Scraper initialized - using Exa API (key length: {len(current_settings.EXA_API_KEY)})")
         elif not EXA_AVAILABLE:
             print(f"⚠️  PDF Scraper: Exa API library not installed. Please install: pip install exa-py")
-        elif not settings.EXA_API_KEY:
+        elif not current_settings.EXA_API_KEY:
             print(f"⚠️  PDF Scraper: Exa API key not configured. Set EXA_API_KEY environment variable.")
     
     async def search(self, keyword: str, max_results: int = None) -> List[Dict]:
         """Search for PDF files using Exa API"""
+        # Re-import settings to get latest values
+        from app.config import settings as current_settings
+        
         if max_results is None:
-            max_results = settings.MAX_RESULTS_PER_KEYWORD
+            max_results = current_settings.MAX_RESULTS_PER_KEYWORD
         
         print(f"  🔍 PDF Scraper: Searching for '{keyword}' (max_results={max_results})", flush=True)
         
@@ -34,25 +39,25 @@ class PDFScraper(BaseScraper):
             print(f"  ❌ Exa API library not available. Please install: pip install exa-py", flush=True)
             return []
         
-        if not settings.EXA_API_KEY:
+        if not current_settings.EXA_API_KEY:
             print(f"  ❌ Exa API key not configured. Set EXA_API_KEY environment variable.", flush=True)
             return []
         
         # Use Exa API for PDF search
         print(f"  🔄 Using Exa API for PDF search...", flush=True)
-        items = await self._search_with_exa(keyword, max_results)
+        items = await self._search_with_exa(keyword, max_results, current_settings.EXA_API_KEY)
         
         print(f"  ✅ PDF Scraper: Found {len(items)} PDFs for '{keyword}'", flush=True)
         return items[:max_results]
     
-    async def _search_with_exa(self, keyword: str, max_results: int) -> List[Dict]:
+    async def _search_with_exa(self, keyword: str, max_results: int, api_key: str) -> List[Dict]:
         """Search PDFs using Exa API (high quality semantic search for PDFs)"""
         items = []
         
-        if not EXA_AVAILABLE or not settings.EXA_API_KEY:
+        if not EXA_AVAILABLE or not api_key:
             if not EXA_AVAILABLE:
                 print(f"    ⚠️  Exa API library not installed", flush=True)
-            elif not settings.EXA_API_KEY:
+            elif not api_key:
                 print(f"    ⚠️  Exa API key not configured (set EXA_API_KEY environment variable)", flush=True)
             return items
         
@@ -63,7 +68,7 @@ class PDFScraper(BaseScraper):
             loop = asyncio.get_event_loop()
             
             # Create Exa client
-            exa = Exa(api_key=settings.EXA_API_KEY)
+            exa = Exa(api_key=api_key)
             
             # Try multiple query variations for better results
             queries = [

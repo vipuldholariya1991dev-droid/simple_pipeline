@@ -227,16 +227,104 @@ class R2Storage:
             # Better to use get_download_url() which generates presigned URLs
             return f"{settings.R2_ENDPOINT_URL}/{self.bucket_name}/{r2_key}"
     
-    def get_download_url(self, r2_key: str, expires_in: int = 86400) -> str:
+    def get_dashboard_url(self, r2_key: str) -> str:
+        """
+        Generate Cloudflare dashboard URL for an R2 object
+        This URL links to the object in Cloudflare dashboard
+        
+        Args:
+            r2_key: The R2 object key (e.g., "youtube/item_328_video.mp4")
+        
+        Returns:
+            Full dashboard URL that links to the object in Cloudflare dashboard
+            Uses objects list view with prefix filter and search to help locate the specific item
+        """
+        import urllib.parse
+        
+        if not r2_key:
+            return ""
+        
+        # Extract prefix (directory part) and filename from r2_key
+        # e.g., "youtube/item_328_video.mp4" -> prefix = "youtube/", filename = "item_328_video.mp4"
+        if '/' in r2_key:
+            prefix = r2_key.rsplit('/', 1)[0] + '/'
+            filename = r2_key.rsplit('/', 1)[1]
+            encoded_prefix = urllib.parse.quote(prefix, safe='')
+            # Use filename as search hint (Cloudflare dashboard may support search)
+            encoded_filename = urllib.parse.quote(filename, safe='')
+        else:
+            encoded_prefix = ''
+            encoded_filename = urllib.parse.quote(r2_key, safe='')
+        
+        # Build dashboard URL
+        account_id = settings.R2_ACCOUNT_ID
+        bucket_name = self.bucket_name
+        
+        # Use objects list view with prefix filter
+        # Note: Cloudflare R2 dashboard doesn't support direct deep-linking to object details pages
+        # This URL will show objects in that folder/prefix, and the user can search/filter for the specific item
+        if encoded_prefix:
+            # Include prefix filter and filename as a hint (some dashboards support search)
+            dashboard_url = (
+                f"https://dash.cloudflare.com/{account_id}/r2/default/buckets/"
+                f"{bucket_name}/objects?prefix={encoded_prefix}"
+            )
+            # Note: Cloudflare dashboard may not support direct object navigation,
+            # but the prefix filter will show all items in that folder, making it easier to find the specific item
+        else:
+            # If no prefix, go to objects list
+            dashboard_url = (
+                f"https://dash.cloudflare.com/{account_id}/r2/default/buckets/"
+                f"{bucket_name}/objects"
+            )
+        
+        return dashboard_url
+    
+    def get_download_url(self, r2_key: str, expires_in: int = 86400, force_presigned: bool = False) -> str:
         """
         Generate download URL (presigned if bucket is private, public if bucket is public)
         
         Args:
             r2_key: The R2 object key
             expires_in: Expiration time in seconds (default: 24 hours for better compatibility)
+            force_presigned: If True, always generate presigned URL even if public URL is available
         """
         if not self.is_available():
             return None
+        
+        # Always use presigned URL if force_presigned is True (for CSV downloads)
+        if force_presigned:
+            try:
+                # Determine content type from file extension
+                content_type = 'application/octet-stream'
+                if r2_key.endswith('.mp4'):
+                    content_type = 'video/mp4'
+                elif r2_key.endswith('.jpg') or r2_key.endswith('.jpeg'):
+                    content_type = 'image/jpeg'
+                elif r2_key.endswith('.png'):
+                    content_type = 'image/png'
+                elif r2_key.endswith('.pdf'):
+                    content_type = 'application/pdf'
+                
+                # Generate presigned URL (works for both public and private buckets)
+                url = self.client.generate_presigned_url(
+                    'get_object',
+                    Params={
+                        'Bucket': self.bucket_name, 
+                        'Key': r2_key,
+                        # Add response headers for proper download behavior
+                        'ResponseContentDisposition': f'attachment; filename="{r2_key.split("/")[-1]}"',
+                        'ResponseContentType': content_type
+                    },
+                    ExpiresIn=expires_in
+                )
+                return url
+            except Exception as e:
+                # Fallback to public URL or direct URL
+                print(f"⚠️  Could not generate presigned URL: {e}")
+                if settings.R2_PUBLIC_URL:
+                    return f"{settings.R2_PUBLIC_URL.rstrip('/')}/{r2_key}"
+                return f"{settings.R2_ENDPOINT_URL}/{self.bucket_name}/{r2_key}"
         
         if settings.R2_PUBLIC_URL:
             # Use custom domain (public access)

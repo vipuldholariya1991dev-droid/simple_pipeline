@@ -22,6 +22,9 @@ function App() {
   const fadeOutTimeoutRef = useRef(null)
   const progressIntervalRef = useRef(null)
   const resumableModeStateRef = useRef({ show: false, fading: false })
+  const [sourceFiles, setSourceFiles] = useState([])
+  const [selectedSourceFile, setSelectedSourceFile] = useState('')
+  const [loadingSourceFiles, setLoadingSourceFiles] = useState(false)
   
   // Clear state on initial load
   useEffect(() => {
@@ -106,6 +109,34 @@ function App() {
     }
   }, [taskId])
 
+  // Fetch source files when download page is shown
+  useEffect(() => {
+    if (showDownloadPage && taskId) {
+      fetchSourceFiles()
+    }
+  }, [showDownloadPage, taskId])
+
+  const fetchSourceFiles = async () => {
+    if (!taskId) return
+    
+    setLoadingSourceFiles(true)
+    try {
+      const response = await axios.get(`${API_BASE}/source-files`, {
+        params: { task_id: taskId }
+      })
+      const files = response.data.source_files || []
+      setSourceFiles(files)
+      if (files.length > 0 && !selectedSourceFile) {
+        setSelectedSourceFile(files[0]) // Auto-select first file
+      }
+    } catch (error) {
+      console.error('Error fetching source files:', error)
+      setSourceFiles([])
+    } finally {
+      setLoadingSourceFiles(false)
+    }
+  }
+
   // Fetch items when task is completed
   const fetchItems = async (taskIdParam) => {
     if (!taskIdParam) return
@@ -123,6 +154,80 @@ function App() {
     } catch (error) {
       console.error('Error fetching items:', error)
       setItems([])
+    }
+  }
+
+  const handleDownloadSourceFileCSV = async () => {
+    if (!selectedSourceFile) {
+      alert('Please select a source file from the dropdown.')
+      return
+    }
+    
+    try {
+      const downloadBtn = document.querySelector('.btn-download-source-csv')
+      const originalText = downloadBtn?.textContent
+      if (downloadBtn) {
+        downloadBtn.disabled = true
+        downloadBtn.textContent = 'Downloading...'
+      }
+      
+      // Build request params - task_id is optional, source_file is required
+      const params = {
+        source_file: selectedSourceFile
+      }
+      // Add task_id if available (for backward compatibility, but not required)
+      if (taskId) {
+        params.task_id = taskId
+      }
+      
+      const response = await axios.get(`${API_BASE}/download-source-file-csv`, {
+        params: params,
+        responseType: 'blob'
+      })
+      
+      const blob = new Blob([response.data], { type: 'text/csv' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      
+      // Get filename from Content-Disposition header or generate one
+      const contentDisposition = response.headers['content-disposition']
+      let csvFilename = `${selectedSourceFile.replace('.csv', '')}_scraped_data.csv`
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i)
+        if (filenameMatch) {
+          csvFilename = filenameMatch[1]
+        }
+      }
+      
+      a.download = csvFilename
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+
+      // Restore button
+      if (downloadBtn) {
+        downloadBtn.disabled = false
+        downloadBtn.textContent = originalText
+      }
+
+      alert(`Successfully downloaded CSV file for ${selectedSourceFile}!`)
+    } catch (error) {
+      console.error('Error downloading source file CSV:', error)
+      
+      // Restore button
+      const downloadBtn = document.querySelector('.btn-download-source-csv')
+      if (downloadBtn) {
+        downloadBtn.disabled = false
+        downloadBtn.textContent = `Download CSV for ${selectedSourceFile}`
+      }
+
+      if (error.response?.status === 404) {
+        alert(`No items found for source file: ${selectedSourceFile}`)
+      } else {
+        alert(`Error downloading CSV file: ${error.message || 'Unknown error'}. Please try again.`)
+      }
     }
   }
 
@@ -428,6 +533,54 @@ function App() {
               disabled={loadingDownloadItems || downloadItems.length === 0}
             >
               Download All {downloadContentType} ({downloadItems.length})
+            </button>
+          </div>
+        </div>
+
+        {/* Source File CSV Download Section */}
+        <div className="download-controls" style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid #e2e8f0' }}>
+          <h3 style={{ marginBottom: '16px', fontSize: '18px', fontWeight: '600' }}>Download by Source File</h3>
+          <div className="dropdown-group">
+            <label htmlFor="source-file">Source CSV File:</label>
+            <select
+              id="source-file"
+              value={selectedSourceFile}
+              onChange={(e) => setSelectedSourceFile(e.target.value)}
+              className="content-type-dropdown"
+              disabled={loadingSourceFiles || sourceFiles.length === 0}
+            >
+              {loadingSourceFiles ? (
+                <option>Loading source files...</option>
+              ) : sourceFiles.length === 0 ? (
+                <option>No source files found</option>
+              ) : (
+                <>
+                  <option value="">Select a source file...</option>
+                  {sourceFiles.map((file, index) => (
+                    <option key={index} value={file}>{file}</option>
+                  ))}
+                </>
+              )}
+            </select>
+          </div>
+
+          <div className="download-buttons-row" style={{ marginTop: '12px' }}>
+            <button
+              className="btn-download-source-csv"
+              onClick={handleDownloadSourceFileCSV}
+              disabled={loadingSourceFiles || !selectedSourceFile || sourceFiles.length === 0}
+              style={{ 
+                backgroundColor: '#10b981', 
+                color: 'white',
+                padding: '10px 20px',
+                borderRadius: '6px',
+                border: 'none',
+                cursor: selectedSourceFile && sourceFiles.length > 0 ? 'pointer' : 'not-allowed',
+                opacity: selectedSourceFile && sourceFiles.length > 0 ? 1 : 0.6,
+                fontWeight: '500'
+              }}
+            >
+              {selectedSourceFile ? `Download CSV for ${selectedSourceFile}` : 'Select a source file to download'}
             </button>
           </div>
         </div>
