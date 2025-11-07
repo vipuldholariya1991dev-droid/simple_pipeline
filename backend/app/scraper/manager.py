@@ -247,7 +247,8 @@ class ScraperManager:
             # Scrape PDFs
             if scrape_pdf:
                 print(f"\n🔍 Starting PDF scraping for '{keyword}'...")
-                pdf_items = await self.scrapers["pdf"].search(keyword, max_results=settings.MAX_RESULTS_PER_KEYWORD * 3)
+                # Use higher limit for PDFs (MAX_PDF_RESULTS_PER_KEYWORD)
+                pdf_items = await self.scrapers["pdf"].search(keyword, max_results=settings.MAX_PDF_RESULTS_PER_KEYWORD)
                 print(f"  ✅ PDF scraper returned {len(pdf_items)} items for '{keyword}'")
                 if len(pdf_items) == 0:
                     print(f"    ⚠️  No PDFs found for '{keyword}' - check DuckDuckGo search")
@@ -325,12 +326,12 @@ class ScraperManager:
                         existing_pdf_urls.add(url)
                         keyword_urls.add(url)
                         counts["pdf"] += 1
-                        print(f"    ✅ Added PDF {counts['pdf']}/{settings.MAX_RESULTS_PER_KEYWORD}: {url[:80]}")
+                        print(f"    ✅ Added PDF {counts['pdf']}/{settings.MAX_PDF_RESULTS_PER_KEYWORD}: {url[:80]}")
                         print(f"    📊 PDF count for keyword '{keyword}': {counts['pdf']}")
                         
                         # Stop if we've reached max_results for this keyword
-                        if counts["pdf"] >= settings.MAX_RESULTS_PER_KEYWORD:
-                            print(f"    ✅ Reached max PDFs ({settings.MAX_RESULTS_PER_KEYWORD}) for keyword '{keyword}'")
+                        if counts["pdf"] >= settings.MAX_PDF_RESULTS_PER_KEYWORD:
+                            print(f"    ✅ Reached max PDFs ({settings.MAX_PDF_RESULTS_PER_KEYWORD}) for keyword '{keyword}'")
                             break
                     except Exception as e:
                         print(f"    ❌ Error adding PDF to database: {e}")

@@ -11,8 +11,10 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:5174"]
     
-    # Scraping - Set to 2 items per keyword
+    # Scraping - Set to 2 items per keyword (for Images and YouTube)
     MAX_RESULTS_PER_KEYWORD: int = 2
+    # PDF scraping - Set to maximum items per keyword (higher limit for PDFs)
+    MAX_PDF_RESULTS_PER_KEYWORD: int = 50  # Maximum PDFs per keyword
     REQUEST_TIMEOUT: int = 30
     USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     

@@ -89,9 +89,12 @@ class PDFScraper(BaseScraper):
                     def run_exa_search(query, max_res):
                         # Search for PDFs using Exa API
                         # Note: Exa will search semantically - we filter results to PDFs only
+                        # Request more results than needed since we filter for PDFs only
+                        # Exa API supports up to 100 results, so request enough to get max_res PDFs
+                        results_to_request = min(max_res * 3, 100)  # Request 3x but cap at 100 (Exa API limit)
                         results = exa.search(
                             query=query,
-                            num_results=max_res * 3,  # Get more results to filter for PDFs
+                            num_results=results_to_request,
                         )
                         return results.results if results.results else []
                     
