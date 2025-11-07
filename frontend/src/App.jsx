@@ -3,6 +3,14 @@ import axios from 'axios'
 import './index.css'
 
 const API_BASE = 'http://localhost:8001/api/scraping'
+const ITEMS_PER_PAGE_OPTIONS = [
+  { label: '25', value: 25 },
+  { label: '50', value: 50 },
+  { label: '100', value: 100 },
+  { label: '250', value: 250 },
+  { label: 'All', value: 0 }
+]
+const DEFAULT_ITEMS_PER_PAGE = 50
 
 function App() {
   const [files, setFiles] = useState([])
@@ -13,7 +21,7 @@ function App() {
   const [progress, setProgress] = useState(null)
   const [loading, setLoading] = useState(false)
   const [items, setItems] = useState([])
-  const [showDownloadPage, setShowDownloadPage] = useState(false)
+  const [showDownloadPage, setShowDownloadPage] = useState(true)
   const [downloadContentType, setDownloadContentType] = useState('PDF')
   const [downloadItems, setDownloadItems] = useState([])
   const [loadingDownloadItems, setLoadingDownloadItems] = useState(false)
@@ -28,8 +36,16 @@ function App() {
   const [allItems, setAllItems] = useState([])
   const [allItemsTotal, setAllItemsTotal] = useState(0)
   const [allItemsPage, setAllItemsPage] = useState(1)
-  const [allItemsLimit] = useState(50)
+  const [allItemsLimit, setAllItemsLimit] = useState(DEFAULT_ITEMS_PER_PAGE)
   const [loadingAllItems, setLoadingAllItems] = useState(false)
+  const [filters, setFilters] = useState({
+    id: '',
+    keyword: '',
+    sourceFile: '',
+    url: '',
+    contentType: ''
+  })
+  const [notification, setNotification] = useState({ show: false, message: '', type: 'success' })
   
   // Clear state on initial load
   useEffect(() => {
@@ -37,7 +53,8 @@ function App() {
     setTaskId(null)
     setProgress(null)
     setItems([])
-    setShowDownloadPage(false)
+    // Set initial history state for downloaded data page (first page)
+    window.history.replaceState({ page: 'downloaded-data' }, '', window.location.href)
   }, [])
 
   // Real-time progress fetching
@@ -114,33 +131,37 @@ function App() {
     }
   }, [taskId])
 
-  const fetchAllItems = useCallback(async (page = 1) => {
+  const fetchAllItems = useCallback(async (fetchAll = true) => {
     setLoadingAllItems(true)
+
     try {
-      const offset = (page - 1) * allItemsLimit
+      // Fetch all items from database (limit = 0 means fetch all)
       const response = await axios.get(`${API_BASE}/items`, {
         params: {
           all_items: true,
-          limit: allItemsLimit,
-          offset: offset
+          limit: 0,  // Fetch all items
+          offset: 0
         }
       })
 
+      const responseData = response?.data ?? {}
       let itemsData = []
       let totalCount = 0
 
-      if (Array.isArray(response.data)) {
-        itemsData = response.data
-        totalCount = response.data.length
-      } else if (response.data) {
-        itemsData = Array.isArray(response.data.items) ? response.data.items : []
-        totalCount = response.data.total ?? itemsData.length
+      if (Array.isArray(responseData)) {
+        itemsData = responseData
+        totalCount = responseData.length
+      } else {
+        itemsData = Array.isArray(responseData.items) ? responseData.items : []
+        const rawTotal = responseData.total
+        const parsedTotal = typeof rawTotal === 'string' ? parseInt(rawTotal, 10) : rawTotal
+        totalCount = Number.isFinite(parsedTotal) ? parsedTotal : itemsData.length
       }
 
       setAllItems(itemsData)
       setAllItemsTotal(totalCount)
-      setAllItemsPage(page)
-      console.log(`Fetched ${itemsData.length} items (page ${page}, total: ${totalCount})`)
+      setAllItemsPage(1) // Reset to first page when fetching all items
+      console.log(`Fetched all ${itemsData.length} items from database (total: ${totalCount})`)
     } catch (error) {
       console.error('Error fetching all items:', error)
       setAllItems([])
@@ -148,7 +169,39 @@ function App() {
     } finally {
       setLoadingAllItems(false)
     }
-  }, [allItemsLimit])
+  }, [])
+
+  // Handle browser history for page navigation
+  const prevShowDownloadPageRef = useRef(showDownloadPage)
+  useEffect(() => {
+    if (prevShowDownloadPageRef.current !== showDownloadPage) {
+      // Push state to history when transitioning between pages
+      const pageName = showDownloadPage ? 'downloaded-data' : 'scraped-data'
+      window.history.pushState({ page: pageName }, '', window.location.href)
+      prevShowDownloadPageRef.current = showDownloadPage
+    }
+  }, [showDownloadPage])
+
+  // Listen to browser back button
+  useEffect(() => {
+    const handlePopState = (event) => {
+      if (event.state && event.state.page) {
+        if (event.state.page === 'downloaded-data') {
+          setShowDownloadPage(true)
+        } else if (event.state.page === 'scraped-data') {
+          setShowDownloadPage(false)
+        }
+      } else {
+        // Default to downloaded data page (first page)
+        setShowDownloadPage(true)
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => {
+      window.removeEventListener('popstate', handlePopState)
+    }
+  }, [])
 
   // Fetch source files and all items when download page is shown
   useEffect(() => {
@@ -181,9 +234,140 @@ function App() {
     }
   }
 
-  const totalPages = allItemsTotal > 0 ? Math.ceil(allItemsTotal / allItemsLimit) : 1
+  const showNotification = useCallback((message, type = 'success') => {
+    setNotification({ show: true, message, type })
+    setTimeout(() => {
+      setNotification({ show: false, message: '', type: 'success' })
+    }, 4000) // Auto-dismiss after 4 seconds
+  }, [])
+
+  const handleFilterChange = useCallback((column, value) => {
+    setFilters(prev => ({
+      ...prev,
+      [column]: value
+    }))
+    setAllItemsPage(1) // Reset to first page when filter changes
+  }, [])
+
+  // Check if any filters are active
+  const hasActiveFilters = React.useMemo(() => {
+    return Object.values(filters).some(filterValue => filterValue && filterValue.trim() !== '')
+  }, [filters])
+
+  // Filter items based on filter state
+  const filteredItems = React.useMemo(() => {
+    if (!allItems || allItems.length === 0) return []
+    
+    // If no filters are active, return all items
+    if (!hasActiveFilters) {
+      return allItems
+    }
+    
+    return allItems.filter(item => {
+      // Filter by ID
+      if (filters.id && filters.id.trim() !== '' && !String(item.id || '').toLowerCase().startsWith(filters.id.toLowerCase())) {
+        return false
+      }
+      
+      // Filter by Keyword
+      if (filters.keyword && filters.keyword.trim() !== '' && !String(item.keyword || '').toLowerCase().startsWith(filters.keyword.toLowerCase())) {
+        return false
+      }
+      
+      // Filter by Source File
+      if (filters.sourceFile && filters.sourceFile.trim() !== '' && !String(item.source_file || '').toLowerCase().startsWith(filters.sourceFile.toLowerCase())) {
+        return false
+      }
+      
+      // Filter by URL
+      if (filters.url && filters.url.trim() !== '' && !String(item.url || '').toLowerCase().startsWith(filters.url.toLowerCase())) {
+        return false
+      }
+      
+      // Filter by Content Type
+      if (filters.contentType && filters.contentType.trim() !== '' && !String(item.content_type || '').toLowerCase().startsWith(filters.contentType.toLowerCase())) {
+        return false
+      }
+      
+      return true
+    })
+  }, [allItems, filters, hasActiveFilters])
+
+  const filteredTotal = filteredItems.length
+  const isUnlimitedView = allItemsLimit === 0
+  // Use filteredTotal for pagination calculations
+  const filteredTotalPages = isUnlimitedView ? 1 : (filteredTotal > 0 ? Math.ceil(filteredTotal / allItemsLimit) : 1)
   const isFirstPage = allItemsPage <= 1
-  const isLastPage = allItemsPage >= totalPages
+  const isLastPage = isUnlimitedView || allItemsPage >= filteredTotalPages
+  const startItemIndex = filteredTotal === 0 ? 0 : (isUnlimitedView ? 1 : (allItemsPage - 1) * allItemsLimit + 1)
+  const endItemIndex = filteredTotal === 0 ? 0 : (isUnlimitedView ? filteredTotal : Math.min(allItemsPage * allItemsLimit, filteredTotal))
+  const displayItems = isUnlimitedView 
+    ? filteredItems 
+    : filteredItems.slice((allItemsPage - 1) * allItemsLimit, allItemsPage * allItemsLimit)
+
+  const handleAllItemsLimitChange = useCallback((event) => {
+    const value = parseInt(event.target.value, 10)
+    const nextLimit = Number.isFinite(value) && value > 0 ? value : DEFAULT_ITEMS_PER_PAGE
+    setAllItemsLimit(nextLimit)
+    setAllItemsPage(1) // Reset to first page when changing items per page
+  }, [])
+
+  const handleAllItemsPageChange = useCallback((page) => {
+    if (loadingAllItems || isUnlimitedView) return
+    if (page < 1 || page > filteredTotalPages) return
+    setAllItemsPage(page)
+  }, [isUnlimitedView, loadingAllItems, filteredTotalPages])
+
+  const handleDownloadFilteredCSV = useCallback(() => {
+    if (!filteredItems || filteredItems.length === 0) {
+      showNotification('No filtered items to download.', 'error')
+      return
+    }
+
+    // Create CSV header
+    const headers = ['ID', 'Keyword', 'Source File', 'URL', 'Content Type', 'Cloudflare R2 URL']
+    
+    // Create CSV rows
+    const csvRows = [
+      headers.join(','),
+      ...filteredItems.map(item => {
+        const id = item.id || ''
+        const keyword = `"${(item.keyword || '').replace(/"/g, '""')}"`
+        const sourceFile = `"${(item.source_file || '').replace(/"/g, '""')}"`
+        const url = `"${(item.url || '').replace(/"/g, '""')}"`
+        const contentType = item.content_type || ''
+        const r2Url = `"${(item.r2_url || '').replace(/"/g, '""')}"`
+        return [id, keyword, sourceFile, url, contentType, r2Url].join(',')
+      })
+    ]
+
+    // Create CSV content
+    const csvContent = csvRows.join('\n')
+    
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    
+    // Generate filename with filter info
+    const filterParts = []
+    if (filters.id) filterParts.push(`id-${filters.id}`)
+    if (filters.keyword) filterParts.push(`keyword-${filters.keyword}`)
+    if (filters.sourceFile) filterParts.push(`source-${filters.sourceFile}`)
+    if (filters.url) filterParts.push(`url-${filters.url}`)
+    if (filters.contentType) filterParts.push(`type-${filters.contentType}`)
+    
+    const filterSuffix = filterParts.length > 0 ? `_${filterParts.join('_')}` : ''
+    const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    link.download = `filtered_scraped_items${filterSuffix}_${timestamp}.csv`
+    
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    showNotification(`Successfully downloaded ${filteredItems.length} filtered items as CSV!`, 'success')
+  }, [filteredItems, filters, showNotification])
 
   // Fetch items when task is completed
   const fetchItems = async (taskIdParam) => {
@@ -207,7 +391,7 @@ function App() {
 
   const handleDownloadSourceFileCSV = async () => {
     if (!selectedSourceFile) {
-      alert('Please select a source file from the dropdown.')
+      showNotification('Please select a source file from the dropdown.', 'error')
       return
     }
     
@@ -259,8 +443,7 @@ function App() {
         downloadBtn.disabled = false
         downloadBtn.textContent = originalText
       }
-
-      alert(`Successfully downloaded CSV file for ${selectedSourceFile}!`)
+      showNotification(`Successfully downloaded CSV file for ${selectedSourceFile}!`, 'success')
     } catch (error) {
       console.error('Error downloading source file CSV:', error)
       
@@ -270,11 +453,10 @@ function App() {
         downloadBtn.disabled = false
         downloadBtn.textContent = `Download CSV for ${selectedSourceFile}`
       }
-
       if (error.response?.status === 404) {
-        alert(`No items found for source file: ${selectedSourceFile}`)
+        showNotification(`No items found for source file: ${selectedSourceFile}`, 'error')
       } else {
-        alert(`Error downloading CSV file: ${error.message || 'Unknown error'}. Please try again.`)
+        showNotification(`Error downloading CSV file: ${error.message || 'Unknown error'}. Please try again.`, 'error')
       }
     }
   }
@@ -286,7 +468,7 @@ function App() {
 
   const handleShowDownloadItems = async () => {
     if (!taskId) {
-      alert('Task ID not found. Please go back and start a new scraping task.')
+      showNotification('Task ID not found. Please go back and start a new scraping task.', 'error')
       return
     }
     
@@ -310,7 +492,7 @@ function App() {
     } catch (error) {
       console.error('Error fetching download items:', error)
       setDownloadItems([])
-      alert(`Error loading items: ${error.message || 'Unknown error'}`)
+      showNotification(`Error loading items: ${error.message || 'Unknown error'}`, 'error')
     } finally {
       setLoadingDownloadItems(false)
     }
@@ -320,7 +502,7 @@ function App() {
     // Handle YouTube separately - download as CSV file
     if (downloadContentType === 'YOUTUBE') {
       if (!taskId) {
-        alert('Task ID not found. Please refresh the page and try again.')
+        showNotification('Task ID not found. Please refresh the page and try again.', 'error')
         return
       }
 
@@ -369,8 +551,7 @@ function App() {
           downloadBtn.disabled = false
           downloadBtn.textContent = originalText
         }
-
-        alert(`Successfully downloaded ${downloadItems.length || 'all'} YouTube items as CSV file!`)
+        showNotification(`Successfully downloaded ${downloadItems.length || 'all'} YouTube items as CSV file!`, 'success')
       } catch (error) {
         console.error('Error downloading CSV:', error)
         
@@ -380,24 +561,23 @@ function App() {
           downloadBtn.disabled = false
           downloadBtn.textContent = `Download All ${downloadContentType} (${downloadItems.length})`
         }
-
         if (error.response?.status === 404) {
-          alert('No YouTube items found for this task.')
+          showNotification('No YouTube items found for this task.', 'error')
         } else {
-          alert(`Error downloading CSV file: ${error.message || 'Unknown error'}. Please try again.`)
+          showNotification(`Error downloading CSV file: ${error.message || 'Unknown error'}. Please try again.`, 'error')
         }
       }
       return
     }
 
     if (downloadItems.length === 0) {
-      alert('No items to download. Please click "Show Items" first.')
+      showNotification('No items to download. Please click "Show Items" first.', 'error')
       return
     }
 
     // For PDFs and Images, download as ZIP file
     if (!taskId) {
-      alert('Task ID not found. Please refresh the page and try again.')
+      showNotification('Task ID not found. Please refresh the page and try again.', 'error')
       return
     }
 
@@ -447,8 +627,7 @@ function App() {
         downloadBtn.disabled = false
         downloadBtn.textContent = originalText
       }
-
-      alert(`Successfully downloaded ${downloadItems.length} ${downloadContentType} items as ZIP file!`)
+      showNotification(`Successfully downloaded ${downloadItems.length} ${downloadContentType} items as ZIP file!`, 'success')
     } catch (error) {
       console.error('Error downloading ZIP:', error)
       
@@ -458,25 +637,24 @@ function App() {
         downloadBtn.disabled = false
         downloadBtn.textContent = `Download All ${downloadContentType} (${downloadItems.length})`
       }
-
       if (error.response?.status === 404) {
-        alert(`No ${downloadContentType} items found for this task.`)
+        showNotification(`No ${downloadContentType} items found for this task.`, 'error')
       } else if (error.response?.status === 400) {
-        alert(error.response.data?.detail || 'Invalid request. Please try again.')
+        showNotification(error.response.data?.detail || 'Invalid request. Please try again.', 'error')
       } else {
-        alert(`Error downloading ZIP file: ${error.message || 'Unknown error'}. Please try again.`)
+        showNotification(`Error downloading ZIP file: ${error.message || 'Unknown error'}. Please try again.`, 'error')
       }
     }
   }
 
   const handleUpload = async () => {
     if (files.length === 0) {
-      alert('Please select at least one CSV file')
+      showNotification('Please select at least one CSV file', 'error')
       return
     }
     
     if (!scrapePdf && !scrapeImage && !scrapeYoutube) {
-      alert('Please select at least one content type to scrape (PDF, Image, or YouTube)')
+      showNotification('Please select at least one content type to scrape (PDF, Image, or YouTube)', 'error')
       return
     }
 
@@ -522,8 +700,8 @@ function App() {
       })
     } catch (error) {
       console.error('Error uploading files:', error)
-      alert('Error uploading files. Please try again.')
       setLoading(false)
+      showNotification('Error uploading files. Please try again.', 'error')
     }
   }
 
@@ -535,199 +713,369 @@ function App() {
   // Show download page if enabled
   if (showDownloadPage) {
     return (
-      <div className="container">
-        <div className="header download-page">
-          <button 
-            className="btn-back"
-            onClick={() => setShowDownloadPage(false)}
-            title="Back to Main Page"
+      <div className="container download-page-container">
+        {/* Common Header */}
+        <div style={{ 
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
+          display: 'flex', 
+          justifyContent: 'center',
+          alignItems: 'center',
+          gap: '0',
+          marginBottom: '24px',
+          padding: '16px 0',
+          borderBottom: '1px solid #e5e7eb',
+          backgroundColor: '#ffffff',
+          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
+        }}>
+          <button
+            onClick={() => setShowDownloadPage(true)}
+            style={{
+              padding: '12px 32px',
+              borderRadius: '6px',
+              border: 'none',
+              backgroundColor: '#2563eb',
+              color: '#ffffff',
+              fontSize: '14px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              marginRight: '8px',
+              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1)'
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.backgroundColor = '#1d4ed8'
+              e.target.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.15)'
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.backgroundColor = '#2563eb'
+              e.target.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.1)'
+            }}
           >
-            ←
+            Downloaded Data
           </button>
-          <h1 style={{ marginTop: '24px', marginBottom: '8px' }}>Download Scraped Data</h1>
-          <p style={{ color: '#718096', marginBottom: '0' }}>Select content type and download all items</p>
-        </div>
-
-        <div className="download-controls">
-          <div className="dropdown-group">
-            <label htmlFor="content-type">Content Type:</label>
-            <select
-              id="content-type"
-              value={downloadContentType}
-              onChange={(e) => {
-                setDownloadContentType(e.target.value)
-                setDownloadItems([]) // Clear items when type changes
-              }}
-              className="content-type-dropdown"
-            >
-              <option value="PDF">PDF</option>
-              <option value="IMAGE">Image</option>
-              <option value="YOUTUBE">YouTube</option>
-            </select>
-          </div>
-
-          <div className="download-buttons-row">
-            <button
-              className="btn-show-items"
-              onClick={handleShowDownloadItems}
-              disabled={loadingDownloadItems || !taskId}
-            >
-              {loadingDownloadItems ? 'Loading...' : 'Show Items'}
-            </button>
-
-            <button
-              className="btn-download-all"
-              onClick={handleDownloadAll}
-              disabled={loadingDownloadItems || downloadItems.length === 0}
-            >
-              Download All {downloadContentType} ({downloadItems.length})
-            </button>
-          </div>
-        </div>
-
-        {/* Source File CSV Download Section */}
-        <div className="download-controls" style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid #e2e8f0' }}>
-          <h3 style={{ marginBottom: '16px', fontSize: '18px', fontWeight: '600' }}>Download by Source File</h3>
-          <div className="dropdown-group">
-            <label htmlFor="source-file">Source CSV File:</label>
-            <select
-              id="source-file"
-              value={selectedSourceFile}
-              onChange={(e) => setSelectedSourceFile(e.target.value)}
-              className="content-type-dropdown"
-              disabled={loadingSourceFiles || sourceFiles.length === 0}
-            >
-              {loadingSourceFiles ? (
-                <option>Loading source files...</option>
-              ) : sourceFiles.length === 0 ? (
-                <option>No source files found</option>
-              ) : (
-                <>
-                  <option value="">Select a source file...</option>
-                  {sourceFiles.map((file, index) => (
-                    <option key={index} value={file}>{file}</option>
-                  ))}
-                </>
-              )}
-            </select>
-          </div>
-
-          <div className="download-buttons-row" style={{ marginTop: '12px' }}>
-            <button
-              className="btn-download-source-csv"
-              onClick={handleDownloadSourceFileCSV}
-              disabled={loadingSourceFiles || !selectedSourceFile || sourceFiles.length === 0}
-              style={{ 
-                backgroundColor: '#10b981', 
-                color: 'white',
-                padding: '10px 20px',
-                borderRadius: '6px',
-                border: 'none',
-                cursor: selectedSourceFile && sourceFiles.length > 0 ? 'pointer' : 'not-allowed',
-                opacity: selectedSourceFile && sourceFiles.length > 0 ? 1 : 0.6,
-                fontWeight: '500'
-              }}
-            >
-              {selectedSourceFile ? `Download CSV for ${selectedSourceFile}` : 'Select a source file to download'}
-            </button>
-          </div>
+          <button
+            onClick={() => setShowDownloadPage(false)}
+            style={{
+              padding: '12px 32px',
+              borderRadius: '6px',
+              border: '1px solid #d1d5db',
+              backgroundColor: '#ffffff',
+              color: '#6b7280',
+              fontSize: '14px',
+              fontWeight: 500,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.backgroundColor = '#f9fafb'
+              e.target.style.borderColor = '#9ca3af'
+              e.target.style.color = '#374151'
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.backgroundColor = '#ffffff'
+              e.target.style.borderColor = '#d1d5db'
+              e.target.style.color = '#6b7280'
+            }}
+          >
+            Scraped Data
+          </button>
         </div>
 
         {/* All Items Table Section */}
-        <div className="items-section" style={{ marginTop: '32px' }}>
-          <h3>All Scraped Items ({allItemsTotal})</h3>
+        <div className="items-section" style={{ marginTop: '16px', paddingTop: '12px', paddingBottom: '0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h3 style={{ margin: 0 }}>All Scraped Items ({allItemsTotal})</h3>
+            {hasActiveFilters && (
+              <button
+                onClick={handleDownloadFilteredCSV}
+                disabled={filteredTotal === 0}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  backgroundColor: filteredTotal === 0 ? '#cbd5e0' : '#3182ce',
+                  color: 'white',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  cursor: filteredTotal === 0 ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'background-color 0.2s ease'
+                }}
+                title={`Download ${filteredTotal} filtered items as CSV`}
+              >
+                <span>📥</span>
+                <span>Download Filtered CSV ({filteredTotal})</span>
+              </button>
+            )}
+          </div>
           
           {loadingAllItems && (
             <div className="loading">Loading items...</div>
           )}
 
-          {!loadingAllItems && allItems.length > 0 && (
+          {!loadingAllItems && (allItems.length > 0 || filteredTotal > 0) && (
             <>
+              <div
+                className="table-toolbar"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '12px',
+                  marginBottom: '12px',
+                  padding: '12px 16px',
+                  backgroundColor: '#f8fafc',
+                  borderRadius: '8px',
+                  border: '1px solid #e2e8f0'
+                }}
+              >
+                <div style={{ color: '#2d3748', fontWeight: 500 }}>
+                  Showing {filteredTotal > 0 ? (isUnlimitedView ? 1 : startItemIndex) : 0}
+                  {filteredTotal > 0 && (isUnlimitedView ? filteredTotal : (startItemIndex !== endItemIndex ? `-${endItemIndex}` : ''))} of {filteredTotal} items
+                  {hasActiveFilters && ` (filtered from ${allItemsTotal} total)`}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <label htmlFor="items-per-page-select" style={{ color: '#4a5568', fontSize: '14px' }}>
+                    Items per page:
+                  </label>
+                  <select
+                    id="items-per-page-select"
+                    value={allItemsLimit}
+                    onChange={handleAllItemsLimitChange}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e0',
+                      backgroundColor: 'white',
+                      color: '#2d3748',
+                      fontWeight: 500
+                    }}
+                  >
+                    {ITEMS_PER_PAGE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               <div className="table-container">
                 <table className="items-table">
                   <thead>
                     <tr>
-                      <th>ID</th>
-                      <th>Keyword</th>
-                      <th>Source File</th>
-                      <th>URL</th>
-                      <th>Content Type</th>
+                      <th>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>ID</div>
+                        <input
+                          type="text"
+                          placeholder="Filter ID..."
+                          value={filters.id}
+                          onChange={(e) => handleFilterChange('id', e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#f7fafc',
+                            fontSize: '13px'
+                          }}
+                        />
+                      </th>
+                      <th>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Keyword</div>
+                        <input
+                          type="text"
+                          placeholder="Filter Keyword..."
+                          value={filters.keyword}
+                          onChange={(e) => handleFilterChange('keyword', e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#f7fafc',
+                            fontSize: '13px'
+                          }}
+                        />
+                      </th>
+                      <th>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Source File</div>
+                        <input
+                          type="text"
+                          placeholder="Filter Source File..."
+                          value={filters.sourceFile}
+                          onChange={(e) => handleFilterChange('sourceFile', e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#f7fafc',
+                            fontSize: '13px'
+                          }}
+                        />
+                      </th>
+                      <th>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>URL</div>
+                        <input
+                          type="text"
+                          placeholder="Filter URL..."
+                          value={filters.url}
+                          onChange={(e) => handleFilterChange('url', e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#f7fafc',
+                            fontSize: '13px'
+                          }}
+                        />
+                      </th>
+                      <th>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Content Type</div>
+                        <input
+                          type="text"
+                          placeholder="Filter Content Type..."
+                          value={filters.contentType}
+                          onChange={(e) => handleFilterChange('contentType', e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '6px 8px',
+                            borderRadius: '4px',
+                            border: '1px solid #e2e8f0',
+                            backgroundColor: '#f7fafc',
+                            fontSize: '13px'
+                          }}
+                        />
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {allItems.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.id}</td>
-                        <td>{item.keyword}</td>
-                        <td>{item.source_file || '-'}</td>
-                        <td>
-                          <a 
-                            href={item.url} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="url-link"
-                            title={item.url}
-                          >
-                            {item.url.length > 50 ? `${item.url.substring(0, 50)}...` : item.url}
-                          </a>
-                        </td>
-                        <td>
-                          <span className={`type-badge type-${item.content_type?.toLowerCase()}`}>
-                            {item.content_type}
-                          </span>
+                    {displayItems.length > 0 ? (
+                      displayItems.map((item) => (
+                        <tr key={item.id}>
+                          <td>{item.id}</td>
+                          <td>{item.keyword}</td>
+                          <td>{item.source_file || '-'}</td>
+                          <td>
+                            <a 
+                              href={item.url} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="url-link"
+                              title={item.url}
+                            >
+                              {item.url.length > 50 ? `${item.url.substring(0, 50)}...` : item.url}
+                            </a>
+                          </td>
+                          <td>
+                            <span className={`type-badge type-${item.content_type?.toLowerCase()}`}>
+                              {item.content_type}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan="5" style={{ textAlign: 'center', padding: '20px', color: '#718096' }}>
+                          No items match the current filters
                         </td>
                       </tr>
-                    ))}
+                    )}
                   </tbody>
                 </table>
               </div>
               
               {/* Pagination Controls */}
-              <div style={{ 
-                display: 'flex', 
-                justifyContent: 'center', 
-                alignItems: 'center', 
-                gap: '12px', 
-                marginTop: '20px',
-                padding: '16px'
-              }}>
-                <button
-                  onClick={() => fetchAllItems(allItemsPage - 1)}
-                  disabled={isFirstPage || loadingAllItems}
-                  style={{
-                    padding: '8px 16px',
-                    borderRadius: '6px',
-                    border: '1px solid #e2e8f0',
-                    backgroundColor: isFirstPage ? '#f7fafc' : 'white',
-                    cursor: isFirstPage ? 'not-allowed' : 'pointer',
-                    opacity: isFirstPage ? 0.6 : 1
-                  }}
-                >
-                  Previous
-                </button>
-                <span style={{ 
-                  padding: '8px 16px',
-                  color: '#4a5568',
-                  fontWeight: '500'
+              {!isUnlimitedView && (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center', 
+                  gap: '12px', 
+                  marginTop: '12px',
+                  marginBottom: '0',
+                  padding: '4px'
                 }}>
-                  Page {allItemsPage} of {totalPages} 
-                  ({allItemsTotal} total items)
-                </span>
-                <button
-                  onClick={() => fetchAllItems(allItemsPage + 1)}
-                  disabled={isLastPage || loadingAllItems}
-                  style={{
+                  <button
+                    onClick={() => handleAllItemsPageChange(allItemsPage - 1)}
+                    disabled={isFirstPage || loadingAllItems}
+                    aria-label="Previous page"
+                    style={{
+                      width: '44px',
+                      height: '44px',
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      borderRadius: '12px',
+                      border: '1px solid #e2e8f0',
+                      backgroundColor: 'white',
+                      cursor: isFirstPage ? 'not-allowed' : 'pointer',
+                      color: isFirstPage ? '#a0aec0' : '#3182ce',
+                      fontSize: '20px',
+                      fontWeight: 500,
+                      transition: 'all 0.2s ease',
+                      padding: 0
+                    }}
+                  >
+                    &lt;
+                  </button>
+                  <span style={{ 
                     padding: '8px 16px',
-                    borderRadius: '6px',
-                    border: '1px solid #e2e8f0',
-                    backgroundColor: isLastPage ? '#f7fafc' : 'white',
-                    cursor: isLastPage ? 'not-allowed' : 'pointer',
-                    opacity: isLastPage ? 0.6 : 1
-                  }}
-                >
-                  Next
-                </button>
-              </div>
+                    color: '#4a5568',
+                    fontWeight: '500'
+                  }}>
+                    Page {allItemsPage} of {filteredTotalPages} • {filteredTotal} items
+                    {hasActiveFilters && ` (of ${allItemsTotal} total)`}
+                  </span>
+                  <button
+                    onClick={() => handleAllItemsPageChange(allItemsPage + 1)}
+                    disabled={isLastPage || loadingAllItems}
+                    aria-label="Next page"
+                    style={{
+                      width: '44px',
+                      height: '44px',
+                      display: 'flex',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      borderRadius: '12px',
+                      border: '1px solid #e2e8f0',
+                      backgroundColor: 'white',
+                      cursor: isLastPage ? 'not-allowed' : 'pointer',
+                      color: isLastPage ? '#a0aec0' : '#3182ce',
+                      fontSize: '20px',
+                      fontWeight: 500,
+                      transition: 'all 0.2s ease',
+                      padding: 0
+                    }}
+                  >
+                    &gt;
+                  </button>
+                </div>
+              )}
+
+              {isUnlimitedView && (
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  padding: '4px',
+                  marginTop: '8px',
+                  marginBottom: '0',
+                  color: '#4a5568',
+                  fontWeight: 500
+                }}>
+                  Showing all {filteredTotal} items on one page
+                  {hasActiveFilters && ` (filtered from ${allItemsTotal} total)`}
+                </div>
+              )}
             </>
           )}
 
@@ -738,68 +1086,126 @@ function App() {
           )}
         </div>
 
-        {/* Legacy Content Type Filter Section (kept for backward compatibility) */}
-        {loadingDownloadItems && (
-          <div className="loading">Loading items...</div>
-        )}
-
-        {!loadingDownloadItems && downloadItems.length > 0 && (
-          <div className="items-section" style={{ marginTop: '32px' }}>
-            <h3>{downloadContentType} Items ({downloadItems.length})</h3>
-            <div className="table-container">
-              <table className="items-table">
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Keyword</th>
-                    <th>URL</th>
-                    <th>Type</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {downloadItems.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.id}</td>
-                      <td>
-                        {item.keyword}
-                        {item.source_file && (
-                          <span className="source-file"> ({item.source_file})</span>
-                        )}
-                      </td>
-                      <td>
-                        <a 
-                          href={item.url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="url-link"
-                        >
-                          {item.url.length > 60 ? `${item.url.substring(0, 60)}...` : item.url}
-                        </a>
-                      </td>
-                      <td>
-                        <span className={`type-badge type-${item.content_type?.toLowerCase()}`}>
-                          {item.content_type}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {!loadingDownloadItems && downloadItems.length === 0 && taskId && (
-          <div className="no-items">
-            <p>No {downloadContentType} items found. Click "Show Items" to load items.</p>
-          </div>
-        )}
       </div>
     )
   }
 
   return (
     <div className="container">
+      {/* Notification Component */}
+      {notification.show && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            zIndex: 10000,
+            padding: '16px 20px',
+            borderRadius: '8px',
+            backgroundColor: notification.type === 'success' ? '#10b981' : notification.type === 'error' ? '#ef4444' : '#3b82f6',
+            color: 'white',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            minWidth: '300px',
+            maxWidth: '500px',
+            animation: 'slideIn 0.3s ease-out'
+          }}
+        >
+          <span style={{ fontSize: '20px' }}>
+            {notification.type === 'success' ? '✅' : notification.type === 'error' ? '❌' : 'ℹ️'}
+          </span>
+          <span style={{ flex: 1, fontWeight: 500 }}>{notification.message}</span>
+          <button
+            onClick={() => setNotification({ show: false, message: '', type: 'success' })}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'white',
+              cursor: 'pointer',
+              fontSize: '20px',
+              padding: 0,
+              width: '24px',
+              height: '24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {/* Common Header */}
+      <div style={{ 
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+        display: 'flex', 
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: '0',
+        marginBottom: '24px',
+        padding: '16px 0',
+        borderBottom: '1px solid #e5e7eb',
+        backgroundColor: '#ffffff',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
+      }}>
+        <button
+          onClick={() => setShowDownloadPage(true)}
+          style={{
+            padding: '12px 32px',
+            borderRadius: '6px',
+            border: '1px solid #d1d5db',
+            backgroundColor: '#ffffff',
+            color: '#6b7280',
+            fontSize: '14px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            marginRight: '8px',
+            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
+          }}
+          onMouseEnter={(e) => {
+            e.target.style.backgroundColor = '#f9fafb'
+            e.target.style.borderColor = '#9ca3af'
+            e.target.style.color = '#374151'
+          }}
+          onMouseLeave={(e) => {
+            e.target.style.backgroundColor = '#ffffff'
+            e.target.style.borderColor = '#d1d5db'
+            e.target.style.color = '#6b7280'
+          }}
+        >
+          Downloaded Data
+        </button>
+        <button
+          onClick={() => setShowDownloadPage(false)}
+          style={{
+            padding: '12px 32px',
+            borderRadius: '6px',
+            border: 'none',
+            backgroundColor: '#2563eb',
+            color: '#ffffff',
+            fontSize: '14px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1)'
+          }}
+          onMouseEnter={(e) => {
+            e.target.style.backgroundColor = '#1d4ed8'
+            e.target.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.15)'
+          }}
+          onMouseLeave={(e) => {
+            e.target.style.backgroundColor = '#2563eb'
+            e.target.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.1)'
+          }}
+        >
+          Scraped Data
+        </button>
+      </div>
       <div className="header">
         {/* Show message when all keywords are already scraped */}
         {progress && (progress.all_keywords_scraped || (progress.status === 'completed' && progress.resumable_mode && progress.new_keywords_count === 0 && progress.skipped_keywords_count > 0)) && (
@@ -923,7 +1329,7 @@ function App() {
                 <div className="stat-label">YouTube</div>
               </div>
             </div>
-            {progress.status === 'completed' && (
+            {progress.status === 'completed' && !(progress.all_keywords_scraped || (progress.resumable_mode && progress.new_keywords_count === 0 && progress.skipped_keywords_count > 0)) && (
               <div className="success">✅ Scraping completed successfully!</div>
             )}
             {progress.status && progress.status.startsWith('error') && (
@@ -976,16 +1382,29 @@ function App() {
                 </tbody>
               </table>
             </div>
-            
             {/* Download Button */}
-            <div className="download-section">
-              <button
-                className="btn-download"
-                onClick={() => setShowDownloadPage(true)}
-              >
-                📥 Download Scraped Data
-              </button>
-            </div>
+            {progress.status === 'completed' && !(progress.all_keywords_scraped || (progress.resumable_mode && progress.new_keywords_count === 0 && progress.skipped_keywords_count > 0)) && (
+              <div className="download-section" style={{ marginTop: '16px', display: 'flex', justifyContent: 'center' }}>
+                <button
+                  className="btn-download"
+                  onClick={() => setShowDownloadPage(true)}
+                >
+                  📥 Download Scraped Data
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Show View Scraped Data button when all keywords already scraped - outside items section */}
+        {progress && progress.status === 'completed' && (progress.all_keywords_scraped || (progress.resumable_mode && progress.new_keywords_count === 0 && progress.skipped_keywords_count > 0)) && (
+          <div className="download-section" style={{ marginTop: '16px', display: 'flex', justifyContent: 'center' }}>
+            <button
+              className="btn-download"
+              onClick={() => setShowDownloadPage(true)}
+            >
+              📥 View Scraped Data
+            </button>
           </div>
         )}
       </div>

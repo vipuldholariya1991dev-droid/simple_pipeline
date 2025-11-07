@@ -15,6 +15,7 @@ from app.database import get_db, ScrapedItem, ContentType
 from app.models import ScrapedItemResponse, ProgressUpdate
 from app.scraper.manager import ScraperManager
 from app.config import settings
+from app.storage import r2_storage
 
 router = APIRouter(prefix="/api/scraping", tags=["scraping"])
 
@@ -407,25 +408,63 @@ async def get_items(
         f"limit={limit}, offset={offset}"
     )
 
+    # Normalize all_items flag (handles bool or string values from query params)
+    if isinstance(all_items, str):
+        all_items_flag = all_items.strip().lower() in {"true", "1", "yes", "on"}
+    else:
+        all_items_flag = bool(all_items)
+    print(f"ℹ️ all_items_flag evaluated to {all_items_flag} (type={type(all_items)})")
+
     # If all_items=True, return all items from database (for download page)
-    if all_items:
+    if all_items_flag:
         query = db.query(ScrapedItem)
         total = query.count()
-        items = (
-            query.order_by(ScrapedItem.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+
+        # Allow limit <= 0 to fetch all items without pagination
+        if limit and limit > 0:
+            items_query = (
+                query.order_by(ScrapedItem.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+        else:
+            items_query = query.order_by(ScrapedItem.created_at.desc())
+
+        items = items_query.all()
+
+        if limit and limit > 0:
+            print(
+                f"🔍 Fetching ALL items: {len(items)} items "
+                f"(offset={offset}, limit={limit}, total={total})"
+            )
+        else:
+            print(
+                f"🔍 Fetching ALL items without pagination: {len(items)} items "
+                f"(total={total})"
+            )
         print(
             f"🔍 Fetching ALL items: {len(items)} items "
             f"(offset={offset}, limit={limit}, total={total})"
         )
 
-        serialized_items = [
-            ScrapedItemResponse.model_validate(item).model_dump()
-            for item in items
-        ]
+        # Serialize items and generate presigned URLs for R2 items
+        serialized_items = []
+        for item in items:
+            item_dict = ScrapedItemResponse.model_validate(item).model_dump()
+            # Generate presigned URL (7 days = 604800 seconds) if r2_key exists
+            if item.r2_key and r2_storage.is_available():
+                try:
+                    presigned_url = r2_storage.get_download_url(
+                        item.r2_key, 
+                        expires_in=604800,  # 7 days
+                        force_presigned=True
+                    )
+                    if presigned_url:
+                        item_dict['r2_url'] = presigned_url
+                except Exception as e:
+                    print(f"⚠️  Could not generate presigned URL for item {item.id}: {e}")
+            serialized_items.append(item_dict)
+        
         return jsonable_encoder(
             {
                 "items": serialized_items,
@@ -458,10 +497,23 @@ async def get_items(
             if len(task_ids) > 1 or (task_ids and task_id not in task_ids):
                 print(f"⚠️  WARNING: Found items with different task_ids: {task_ids}")
 
-        serialized_items = [
-            ScrapedItemResponse.model_validate(item).model_dump()
-            for item in items
-        ]
+        # Serialize items and generate presigned URLs for R2 items
+        serialized_items = []
+        for item in items:
+            item_dict = ScrapedItemResponse.model_validate(item).model_dump()
+            # Generate presigned URL (7 days = 604800 seconds) if r2_key exists
+            if item.r2_key and r2_storage.is_available():
+                try:
+                    presigned_url = r2_storage.get_download_url(
+                        item.r2_key, 
+                        expires_in=604800,  # 7 days
+                        force_presigned=True
+                    )
+                    if presigned_url:
+                        item_dict['r2_url'] = presigned_url
+                except Exception as e:
+                    print(f"⚠️  Could not generate presigned URL for item {item.id}: {e}")
+            serialized_items.append(item_dict)
         # Return as list for backward compatibility (old frontend code expects list)
         return jsonable_encoder(serialized_items)
 

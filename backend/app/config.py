@@ -23,8 +23,7 @@ class Settings(BaseSettings):
     DOWNLOADS_DIR: str = "downloads"
     MAX_DOWNLOAD_SIZE_MB: int = 500
     
-    # Exa API (for PDF search - optional, get API key from https://exa.ai)
-    # Default value from restart script if not set in environment
+    # Exa API (get API key from https://exa.ai)
     EXA_API_KEY: str = os.getenv("EXA_API_KEY", "ab2d74f4-77d7-4c23-a223-96a67c2075e3")
     
     # Cloudflare R2 Storage
