@@ -43,8 +43,7 @@ A modern, scalable web scraping pipeline that extracts PDFs, Images, and YouTube
 - Docker Desktop
 - Python 3.8+
 - Node.js 16+ and npm
-- Cloudflare R2 account (for storage) - Optional but recommended
-- Exa API key (for PDF search) - Optional but recommended
+- **Note**: Default R2 credentials and Exa API key are included in `backend/app/config.py` - the system works out of the box! You can override these with your own credentials if desired.
 
 ### Installation
 
@@ -69,9 +68,10 @@ A modern, scalable web scraping pipeline that extracts PDFs, Images, and YouTube
    pip install -r requirements.txt
    python init_db.py
    
-   # Configure environment variables (optional - defaults are set in config.py)
-   # Set EXA_API_KEY for PDF search (get from https://exa.ai)
-   # Set R2 credentials for Cloudflare R2 storage
+   # Note: Default credentials are included in config.py - system works out of the box!
+   # To use your own credentials, update config.py or set environment variables:
+   # - EXA_API_KEY for PDF search (get from https://exa.ai)
+   # - R2 credentials for Cloudflare R2 storage
    
    # Start backend server
    uvicorn app.main:app --reload --port 8001
