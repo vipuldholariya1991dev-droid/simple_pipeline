@@ -80,8 +80,6 @@ desktop.ini
 # Docker volumes (already handled by docker-compose)
 # But exclude if accidentally committed
 
-# Keep input CSV files
-!keywords1.csv
-!keywords2.csv
-!**/keywords1.csv
-!**/keywords2.csv
+# Ignore CSV files (input and output)
+*.csv
+keywords1_scraped_data*.csv
