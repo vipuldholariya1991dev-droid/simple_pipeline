@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, Response
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import csv
@@ -399,42 +400,71 @@ async def get_items(
             "offset": int
         }
     """
-    from typing import Dict, Any
-    
+    from typing import List
+
+    print(
+        f"ℹ️ get_items called with task_id={task_id}, all_items={all_items}, "
+        f"limit={limit}, offset={offset}"
+    )
+
     # If all_items=True, return all items from database (for download page)
     if all_items:
         query = db.query(ScrapedItem)
         total = query.count()
-        items = query.order_by(ScrapedItem.created_at.desc()).offset(offset).limit(limit).all()
-        print(f"🔍 Fetching ALL items: {len(items)} items (offset={offset}, limit={limit}, total={total})")
-        return {
-            "items": items,
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
-    
+        items = (
+            query.order_by(ScrapedItem.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        print(
+            f"🔍 Fetching ALL items: {len(items)} items "
+            f"(offset={offset}, limit={limit}, total={total})"
+        )
+
+        serialized_items = [
+            ScrapedItemResponse.model_validate(item).model_dump()
+            for item in items
+        ]
+        return jsonable_encoder(
+            {
+                "items": serialized_items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
     # If task_id provided, filter by task_id (backward compatibility)
     if task_id:
-        query = db.query(ScrapedItem).filter(
-            ScrapedItem.task_id == task_id
-        ).filter(
-            ScrapedItem.task_id.isnot(None)
+        query = (
+            db.query(ScrapedItem)
+            .filter(ScrapedItem.task_id == task_id)
+            .filter(ScrapedItem.task_id.isnot(None))
         )
         total = query.count()
-        items = query.order_by(ScrapedItem.created_at.desc()).offset(offset).limit(limit).all()
+        items = (
+            query.order_by(ScrapedItem.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
         print(f"🔍 Filtering items by task_id: {task_id}")
         print(f"📊 Found {len(items)} items for task_id: {task_id} (total={total})")
-        
+
         # Debug: Check if any items have different task_id
         if len(items) > 0:
             task_ids = {item.task_id for item in items if item.task_id}
             if len(task_ids) > 1 or (task_ids and task_id not in task_ids):
                 print(f"⚠️  WARNING: Found items with different task_ids: {task_ids}")
-        
+
+        serialized_items = [
+            ScrapedItemResponse.model_validate(item).model_dump()
+            for item in items
+        ]
         # Return as list for backward compatibility (old frontend code expects list)
-        return items
-    
+        return jsonable_encoder(serialized_items)
+
     # No task_id and all_items=False - return empty list
     print("⚠️  No task_id provided and all_items=False, returning empty list")
     return []

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
 import './index.css'
 
@@ -114,46 +114,51 @@ function App() {
     }
   }, [taskId])
 
+  const fetchAllItems = useCallback(async (page = 1) => {
+    setLoadingAllItems(true)
+    try {
+      const offset = (page - 1) * allItemsLimit
+      const response = await axios.get(`${API_BASE}/items`, {
+        params: {
+          all_items: true,
+          limit: allItemsLimit,
+          offset: offset
+        }
+      })
+
+      let itemsData = []
+      let totalCount = 0
+
+      if (Array.isArray(response.data)) {
+        itemsData = response.data
+        totalCount = response.data.length
+      } else if (response.data) {
+        itemsData = Array.isArray(response.data.items) ? response.data.items : []
+        totalCount = response.data.total ?? itemsData.length
+      }
+
+      setAllItems(itemsData)
+      setAllItemsTotal(totalCount)
+      setAllItemsPage(page)
+      console.log(`Fetched ${itemsData.length} items (page ${page}, total: ${totalCount})`)
+    } catch (error) {
+      console.error('Error fetching all items:', error)
+      setAllItems([])
+      setAllItemsTotal(0)
+    } finally {
+      setLoadingAllItems(false)
+    }
+  }, [allItemsLimit])
+
   // Fetch source files and all items when download page is shown
   useEffect(() => {
     if (showDownloadPage) {
       if (taskId) {
         fetchSourceFiles()
       }
-      // Fetch all items when download page opens
-      const loadAllItems = async () => {
-        setLoadingAllItems(true)
-        try {
-          const offset = 0
-          const response = await axios.get(`${API_BASE}/items`, {
-            params: {
-              all_items: true,
-              limit: allItemsLimit,
-              offset: offset
-            }
-          })
-          
-          // Handle both old format (array) and new format (object with items, total)
-          if (Array.isArray(response.data)) {
-            setAllItems(response.data)
-            setAllItemsTotal(response.data.length)
-          } else {
-            setAllItems(response.data.items || [])
-            setAllItemsTotal(response.data.total || 0)
-          }
-          setAllItemsPage(1)
-          console.log(`Fetched ${response.data.items?.length || response.data.length} items (page 1, total: ${response.data.total || response.data.length})`)
-        } catch (error) {
-          console.error('Error fetching all items:', error)
-          setAllItems([])
-          setAllItemsTotal(0)
-        } finally {
-          setLoadingAllItems(false)
-        }
-      }
-      loadAllItems()
+      fetchAllItems(1)
     }
-  }, [showDownloadPage, taskId, allItemsLimit])
+  }, [showDownloadPage, taskId, fetchAllItems])
 
   const fetchSourceFiles = async () => {
     if (!taskId) return
@@ -176,36 +181,9 @@ function App() {
     }
   }
 
-  const fetchAllItems = async (page = 1) => {
-    setLoadingAllItems(true)
-    try {
-      const offset = (page - 1) * allItemsLimit
-      const response = await axios.get(`${API_BASE}/items`, {
-        params: {
-          all_items: true,
-          limit: allItemsLimit,
-          offset: offset
-        }
-      })
-      
-      // Handle both old format (array) and new format (object with items, total)
-      if (Array.isArray(response.data)) {
-        setAllItems(response.data)
-        setAllItemsTotal(response.data.length)
-      } else {
-        setAllItems(response.data.items || [])
-        setAllItemsTotal(response.data.total || 0)
-      }
-      setAllItemsPage(page)
-      console.log(`Fetched ${response.data.items?.length || response.data.length} items (page ${page}, total: ${response.data.total || response.data.length})`)
-    } catch (error) {
-      console.error('Error fetching all items:', error)
-      setAllItems([])
-      setAllItemsTotal(0)
-    } finally {
-      setLoadingAllItems(false)
-    }
-  }
+  const totalPages = allItemsTotal > 0 ? Math.ceil(allItemsTotal / allItemsLimit) : 1
+  const isFirstPage = allItemsPage <= 1
+  const isLastPage = allItemsPage >= totalPages
 
   // Fetch items when task is completed
   const fetchItems = async (taskIdParam) => {
@@ -715,14 +693,14 @@ function App() {
               }}>
                 <button
                   onClick={() => fetchAllItems(allItemsPage - 1)}
-                  disabled={allItemsPage <= 1 || loadingAllItems}
+                  disabled={isFirstPage || loadingAllItems}
                   style={{
                     padding: '8px 16px',
                     borderRadius: '6px',
                     border: '1px solid #e2e8f0',
-                    backgroundColor: allItemsPage <= 1 ? '#f7fafc' : 'white',
-                    cursor: allItemsPage <= 1 ? 'not-allowed' : 'pointer',
-                    opacity: allItemsPage <= 1 ? 0.6 : 1
+                    backgroundColor: isFirstPage ? '#f7fafc' : 'white',
+                    cursor: isFirstPage ? 'not-allowed' : 'pointer',
+                    opacity: isFirstPage ? 0.6 : 1
                   }}
                 >
                   Previous
@@ -732,19 +710,19 @@ function App() {
                   color: '#4a5568',
                   fontWeight: '500'
                 }}>
-                  Page {allItemsPage} of {Math.ceil(allItemsTotal / allItemsLimit)} 
+                  Page {allItemsPage} of {totalPages} 
                   ({allItemsTotal} total items)
                 </span>
                 <button
                   onClick={() => fetchAllItems(allItemsPage + 1)}
-                  disabled={allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) || loadingAllItems}
+                  disabled={isLastPage || loadingAllItems}
                   style={{
                     padding: '8px 16px',
                     borderRadius: '6px',
                     border: '1px solid #e2e8f0',
-                    backgroundColor: allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) ? '#f7fafc' : 'white',
-                    cursor: allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) ? 'not-allowed' : 'pointer',
-                    opacity: allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) ? 0.6 : 1
+                    backgroundColor: isLastPage ? '#f7fafc' : 'white',
+                    cursor: isLastPage ? 'not-allowed' : 'pointer',
+                    opacity: isLastPage ? 0.6 : 1
                   }}
                 >
                   Next
