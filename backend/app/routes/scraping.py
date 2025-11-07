@@ -380,38 +380,64 @@ async def clear_database_endpoint(db: Session = Depends(get_db)):
         print(f"❌ Error clearing database: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"Error clearing database: {str(e)}")
 
-@router.get("/items", response_model=List[ScrapedItemResponse])
+@router.get("/items")
 async def get_items(
     task_id: Optional[str] = None,
-    limit: int = 1000,
+    all_items: bool = False,
+    limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db)
 ):
-    """Get scraped items - filter by task_id if provided"""
-    # ALWAYS require task_id - never show items without task_id (old items)
-    if not task_id:
-        print("⚠️  No task_id provided, returning empty list")
-        return []
+    """
+    Get scraped items - filter by task_id if provided, or return all items if all_items=True
     
-    # Only show items from the specified task_id
-    # This explicitly excludes NULL task_id items (old items from before task_id was added)
-    query = db.query(ScrapedItem).filter(
-        ScrapedItem.task_id == task_id
-    ).filter(
-        ScrapedItem.task_id.isnot(None)  # Explicitly exclude NULL task_id items
-    )
+    Returns:
+        {
+            "items": List[ScrapedItemResponse],
+            "total": int,
+            "limit": int,
+            "offset": int
+        }
+    """
+    from typing import Dict, Any
     
-    items = query.order_by(ScrapedItem.created_at.desc()).offset(offset).limit(limit).all()
-    print(f"🔍 Filtering items by task_id: {task_id}")
-    print(f"📊 Found {len(items)} items for task_id: {task_id}")
+    # If all_items=True, return all items from database (for download page)
+    if all_items:
+        query = db.query(ScrapedItem)
+        total = query.count()
+        items = query.order_by(ScrapedItem.created_at.desc()).offset(offset).limit(limit).all()
+        print(f"🔍 Fetching ALL items: {len(items)} items (offset={offset}, limit={limit}, total={total})")
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
     
-    # Debug: Check if any items have different task_id
-    if len(items) > 0:
-        task_ids = {item.task_id for item in items if item.task_id}
-        if len(task_ids) > 1 or (task_ids and task_id not in task_ids):
-            print(f"⚠️  WARNING: Found items with different task_ids: {task_ids}")
+    # If task_id provided, filter by task_id (backward compatibility)
+    if task_id:
+        query = db.query(ScrapedItem).filter(
+            ScrapedItem.task_id == task_id
+        ).filter(
+            ScrapedItem.task_id.isnot(None)
+        )
+        total = query.count()
+        items = query.order_by(ScrapedItem.created_at.desc()).offset(offset).limit(limit).all()
+        print(f"🔍 Filtering items by task_id: {task_id}")
+        print(f"📊 Found {len(items)} items for task_id: {task_id} (total={total})")
+        
+        # Debug: Check if any items have different task_id
+        if len(items) > 0:
+            task_ids = {item.task_id for item in items if item.task_id}
+            if len(task_ids) > 1 or (task_ids and task_id not in task_ids):
+                print(f"⚠️  WARNING: Found items with different task_ids: {task_ids}")
+        
+        # Return as list for backward compatibility (old frontend code expects list)
+        return items
     
-    return items
+    # No task_id and all_items=False - return empty list
+    print("⚠️  No task_id provided and all_items=False, returning empty list")
+    return []
 
 @router.get("/download/{item_id}")
 async def download_item(item_id: int, db: Session = Depends(get_db)):

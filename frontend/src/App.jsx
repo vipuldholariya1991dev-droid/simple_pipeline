@@ -25,6 +25,11 @@ function App() {
   const [sourceFiles, setSourceFiles] = useState([])
   const [selectedSourceFile, setSelectedSourceFile] = useState('')
   const [loadingSourceFiles, setLoadingSourceFiles] = useState(false)
+  const [allItems, setAllItems] = useState([])
+  const [allItemsTotal, setAllItemsTotal] = useState(0)
+  const [allItemsPage, setAllItemsPage] = useState(1)
+  const [allItemsLimit] = useState(50)
+  const [loadingAllItems, setLoadingAllItems] = useState(false)
   
   // Clear state on initial load
   useEffect(() => {
@@ -109,12 +114,46 @@ function App() {
     }
   }, [taskId])
 
-  // Fetch source files when download page is shown
+  // Fetch source files and all items when download page is shown
   useEffect(() => {
-    if (showDownloadPage && taskId) {
-      fetchSourceFiles()
+    if (showDownloadPage) {
+      if (taskId) {
+        fetchSourceFiles()
+      }
+      // Fetch all items when download page opens
+      const loadAllItems = async () => {
+        setLoadingAllItems(true)
+        try {
+          const offset = 0
+          const response = await axios.get(`${API_BASE}/items`, {
+            params: {
+              all_items: true,
+              limit: allItemsLimit,
+              offset: offset
+            }
+          })
+          
+          // Handle both old format (array) and new format (object with items, total)
+          if (Array.isArray(response.data)) {
+            setAllItems(response.data)
+            setAllItemsTotal(response.data.length)
+          } else {
+            setAllItems(response.data.items || [])
+            setAllItemsTotal(response.data.total || 0)
+          }
+          setAllItemsPage(1)
+          console.log(`Fetched ${response.data.items?.length || response.data.length} items (page 1, total: ${response.data.total || response.data.length})`)
+        } catch (error) {
+          console.error('Error fetching all items:', error)
+          setAllItems([])
+          setAllItemsTotal(0)
+        } finally {
+          setLoadingAllItems(false)
+        }
+      }
+      loadAllItems()
     }
-  }, [showDownloadPage, taskId])
+  }, [showDownloadPage, taskId, allItemsLimit])
 
   const fetchSourceFiles = async () => {
     if (!taskId) return
@@ -134,6 +173,37 @@ function App() {
       setSourceFiles([])
     } finally {
       setLoadingSourceFiles(false)
+    }
+  }
+
+  const fetchAllItems = async (page = 1) => {
+    setLoadingAllItems(true)
+    try {
+      const offset = (page - 1) * allItemsLimit
+      const response = await axios.get(`${API_BASE}/items`, {
+        params: {
+          all_items: true,
+          limit: allItemsLimit,
+          offset: offset
+        }
+      })
+      
+      // Handle both old format (array) and new format (object with items, total)
+      if (Array.isArray(response.data)) {
+        setAllItems(response.data)
+        setAllItemsTotal(response.data.length)
+      } else {
+        setAllItems(response.data.items || [])
+        setAllItemsTotal(response.data.total || 0)
+      }
+      setAllItemsPage(page)
+      console.log(`Fetched ${response.data.items?.length || response.data.length} items (page ${page}, total: ${response.data.total || response.data.length})`)
+    } catch (error) {
+      console.error('Error fetching all items:', error)
+      setAllItems([])
+      setAllItemsTotal(0)
+    } finally {
+      setLoadingAllItems(false)
     }
   }
 
@@ -585,12 +655,118 @@ function App() {
           </div>
         </div>
 
+        {/* All Items Table Section */}
+        <div className="items-section" style={{ marginTop: '32px' }}>
+          <h3>All Scraped Items ({allItemsTotal})</h3>
+          
+          {loadingAllItems && (
+            <div className="loading">Loading items...</div>
+          )}
+
+          {!loadingAllItems && allItems.length > 0 && (
+            <>
+              <div className="table-container">
+                <table className="items-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Keyword</th>
+                      <th>Source File</th>
+                      <th>URL</th>
+                      <th>Content Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allItems.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.id}</td>
+                        <td>{item.keyword}</td>
+                        <td>{item.source_file || '-'}</td>
+                        <td>
+                          <a 
+                            href={item.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="url-link"
+                            title={item.url}
+                          >
+                            {item.url.length > 50 ? `${item.url.substring(0, 50)}...` : item.url}
+                          </a>
+                        </td>
+                        <td>
+                          <span className={`type-badge type-${item.content_type?.toLowerCase()}`}>
+                            {item.content_type}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              
+              {/* Pagination Controls */}
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'center', 
+                alignItems: 'center', 
+                gap: '12px', 
+                marginTop: '20px',
+                padding: '16px'
+              }}>
+                <button
+                  onClick={() => fetchAllItems(allItemsPage - 1)}
+                  disabled={allItemsPage <= 1 || loadingAllItems}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    backgroundColor: allItemsPage <= 1 ? '#f7fafc' : 'white',
+                    cursor: allItemsPage <= 1 ? 'not-allowed' : 'pointer',
+                    opacity: allItemsPage <= 1 ? 0.6 : 1
+                  }}
+                >
+                  Previous
+                </button>
+                <span style={{ 
+                  padding: '8px 16px',
+                  color: '#4a5568',
+                  fontWeight: '500'
+                }}>
+                  Page {allItemsPage} of {Math.ceil(allItemsTotal / allItemsLimit)} 
+                  ({allItemsTotal} total items)
+                </span>
+                <button
+                  onClick={() => fetchAllItems(allItemsPage + 1)}
+                  disabled={allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) || loadingAllItems}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    backgroundColor: allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) ? '#f7fafc' : 'white',
+                    cursor: allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) ? 'not-allowed' : 'pointer',
+                    opacity: allItemsPage >= Math.ceil(allItemsTotal / allItemsLimit) ? 0.6 : 1
+                  }}
+                >
+                  Next
+                </button>
+              </div>
+            </>
+          )}
+
+          {!loadingAllItems && allItems.length === 0 && (
+            <div className="no-items">
+              <p>No items found in database.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Legacy Content Type Filter Section (kept for backward compatibility) */}
         {loadingDownloadItems && (
           <div className="loading">Loading items...</div>
         )}
 
         {!loadingDownloadItems && downloadItems.length > 0 && (
-          <div className="items-section">
+          <div className="items-section" style={{ marginTop: '32px' }}>
             <h3>{downloadContentType} Items ({downloadItems.length})</h3>
             <div className="table-container">
               <table className="items-table">
