@@ -88,20 +88,49 @@ class PDFScraper(BaseScraper):
                 try:
                     # Run Exa search in executor
                     def run_exa_search(query):
-                        # Search for PDFs using Exa API
-                        # Request maximum allowed by Exa API (100 results per query)
-                        # We'll filter for PDFs and collect all unique ones across all queries
-                        results = exa.search(
-                            query=query,
-                            num_results=EXA_MAX_RESULTS_PER_QUERY,  # Use Exa's maximum
-                        )
-                        return results.results if results.results else []
+                        try:
+                            # Search for PDFs using Exa API
+                            # Request maximum allowed by Exa API (100 results per query)
+                            # We'll filter for PDFs and collect all unique ones across all queries
+                            results = exa.search(
+                                query=query,
+                                num_results=EXA_MAX_RESULTS_PER_QUERY,  # Use Exa's maximum
+                            )
+                            # Check if results is None or if results.results is None/empty
+                            if results is None:
+                                print(f"      ⚠️  Exa API returned None", flush=True)
+                                return []
+                            if not hasattr(results, 'results'):
+                                print(f"      ⚠️  Exa API response has no 'results' attribute. Type: {type(results)}, Attributes: {dir(results)}", flush=True)
+                                return []
+                            if results.results is None:
+                                print(f"      ⚠️  Exa API results.results is None", flush=True)
+                                return []
+                            if not results.results:
+                                print(f"      ⚠️  Exa API returned empty results list", flush=True)
+                                return []
+                            print(f"      ✅ Exa API returned {len(results.results)} results", flush=True)
+                            return results.results
+                        except Exception as e:
+                            # Log the error but don't raise - let the outer try/except handle it
+                            import traceback
+                            print(f"      ⚠️  Exa search error: {e}", flush=True)
+                            print(f"      🔍 Error type: {type(e).__name__}", flush=True)
+                            print(f"      🔍 Error details: {str(e)}", flush=True)
+                            traceback.print_exc()
+                            return []
                     
                     results = await loop.run_in_executor(
                         None,
                         run_exa_search,
                         search_query
                     )
+                    
+                    # Ensure results is a list/iterable
+                    if results is None:
+                        results = []
+                    if not isinstance(results, (list, tuple)):
+                        results = []
                     
                     found_count = 0
                     for result in results:
@@ -117,11 +146,25 @@ class PDFScraper(BaseScraper):
                             if clean_url not in urls:
                                 urls.add(clean_url)
                                 found_count += 1
-                                title = result.title if hasattr(result, 'title') else result.text[:100] if hasattr(result, 'text') else clean_url.split('/')[-1]
+                                
+                                # Safely extract title
+                                if hasattr(result, 'title') and result.title:
+                                    title = result.title
+                                elif hasattr(result, 'text') and result.text:
+                                    title = result.text[:100]
+                                else:
+                                    title = clean_url.split('/')[-1]
+                                
+                                # Safely extract description
+                                if hasattr(result, 'text') and result.text:
+                                    description = result.text[:500]
+                                else:
+                                    description = f"PDF document for: {keyword}"
+                                
                                 items.append({
                                     "url": clean_url,
                                     "title": title[:200] if title else keyword,
-                                    "description": result.text[:500] if hasattr(result, 'text') else f"PDF document for: {keyword}",
+                                    "description": description,
                                 })
                                 print(f"      ✅ Found PDF {found_count}: {clean_url[:80]}", flush=True)
                     
